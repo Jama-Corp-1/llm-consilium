@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from council import aggregate as agg
@@ -44,7 +45,7 @@ class Orchestrator:
         member = self._by_alias(alias)
         return member.privacy_tier if member else "?"
 
-    def _log_council(self, entry: dict, chosen: list[Member]) -> None:
+    def _log_council(self, entry: dict[str, object], chosen: list[Member]) -> None:
         if self._runlog is None:
             return
         redact = any(m.privacy_tier == "B" for m in chosen)
@@ -53,10 +54,10 @@ class Orchestrator:
     def _counts(self) -> dict[str, tuple[int, int]]:
         return self._store.counts() if self._store is not None else {}
 
-    def usage_summary(self) -> list[dict]:
+    def usage_summary(self) -> list[dict[str, object]]:
         return usage.summary(self._members, self._counts())
 
-    def usage_history(self, days: int = 7) -> list[dict]:
+    def usage_history(self, days: int = 7) -> list[dict[str, object]]:
         return self._store.history(days) if self._store is not None else []
 
     def _classifier_for(self, allowed: list[Member]) -> str:
@@ -85,7 +86,7 @@ class Orchestrator:
             return AskResult(answer=answer, model_used=member.alias, capability=None, note="direct")
         pool = usage.available(allowed, self._counts()) or allowed
         auto = capability is None
-        if auto:
+        if capability is None:
             capability = await router.classify(
                 prompt, caller=self._caller, classifier_alias=self._classifier_for(allowed)
             )
@@ -106,7 +107,7 @@ class Orchestrator:
     async def council(
         self, prompt: str, *, members: list[str] | None = None,
         size: int | None = None, mode: str | None = None, sensitivity: str = "sensitive",
-        on_progress=None,
+        on_progress: Callable[[dict[str, object]], None] | None = None,
     ) -> CouncilResult:
         privacy.scan_secrets(prompt)
         allowed = privacy.allowed_members(self._members, sensitivity)
@@ -120,12 +121,13 @@ class Orchestrator:
             pool_by_alias = {m.alias: m for m in pool}
             roster: list[Member] = []
             for alias in members:
+                known = self._by_alias(alias)
                 if alias in pool_by_alias:
                     roster.append(pool_by_alias[alias])
-                elif self._by_alias(alias) is None:
+                elif known is None:
                     notes.append(f"dropped {alias} (unknown)")
                 elif alias not in allowed_by_alias:
-                    tier = self._by_alias(alias).privacy_tier
+                    tier = known.privacy_tier
                     notes.append(f"dropped {alias} (tier {tier} blocked on {sensitivity})")
                 else:
                     notes.append(f"dropped {alias} (exhausted)")

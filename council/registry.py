@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -26,7 +27,7 @@ def available_env_keys(env_file: str | Path = DEFAULT_ENV_FILE) -> set[str]:
     return keys
 
 
-def _required_env(params: dict) -> set[str]:
+def _required_env(params: dict[str, Any]) -> set[str]:
     names: set[str] = set()
     for value in params.values():
         if isinstance(value, str):
@@ -40,7 +41,7 @@ def _derive_family(model: str) -> str:
     return model.split("/", 1)[0] if "/" in model else model
 
 
-def _scores(info: dict) -> dict[str, int]:
+def _scores(info: dict[str, Any]) -> dict[str, int]:
     raw = info.get("scores")
     if isinstance(raw, dict) and raw:
         return {str(k): int(v) for k, v in raw.items()}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 
@@ -81,7 +82,7 @@ async def complete(
         raise MemberCallError(alias, detail)
 
 
-def _extract(alias: str, data: object, recorder: Callable[[str, int], None] | None) -> str:
+def _extract(alias: str, data: Any, recorder: Callable[[str, int], None] | None) -> str:
     # A 200 means the provider served (and metered) the request, so record it before
     # validating the body — otherwise an empty/malformed 200 would silently under-count
     # usage against the daily cap.
@@ -96,7 +97,7 @@ def _extract(alias: str, data: object, recorder: Callable[[str, int], None] | No
     return content
 
 
-def _token_count(data: object) -> int:
+def _token_count(data: Any) -> int:
     usage = data.get("usage") if isinstance(data, dict) else None
     if isinstance(usage, dict):
         try:

@@ -13,11 +13,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _redact(entry: dict) -> dict:
+def _redact(entry: dict[str, object]) -> dict[str, object]:
     e = dict(entry)
     for key in _CONTENT_KEYS:
-        if isinstance(e.get(key), str):
-            e[f"{key}_len"] = len(e[key])
+        value = e.get(key)
+        if isinstance(value, str):
+            e[f"{key}_len"] = len(value)
             e[key] = None
     members = e.get("per_member")
     if isinstance(members, list):
@@ -47,7 +48,7 @@ class RunLog:
     def enabled(self) -> bool:
         return self._enabled
 
-    def record(self, entry: dict, *, redact: bool) -> None:
+    def record(self, entry: dict[str, object], *, redact: bool) -> None:
         if not self._enabled:
             return
         payload = _redact(entry) if redact else dict(entry)

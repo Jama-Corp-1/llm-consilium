@@ -60,7 +60,7 @@ class UsageStore:
             return {}
         return {alias: (req, tok) for alias, req, tok in rows}
 
-    def history(self, days: int = 7, *, end_day: str | None = None) -> list[dict]:
+    def history(self, days: int = 7, *, end_day: str | None = None) -> list[dict[str, object]]:
         end = end_day or today()
         start = (
             datetime.strptime(end, "%Y-%m-%d") - timedelta(days=max(days - 1, 0))
@@ -89,7 +89,7 @@ def available(members: list[Member], counts: dict[str, tuple[int, int]]) -> list
     return [m for m in members if not _exhausted(m, counts)]
 
 
-def summary(members: list[Member], counts: dict[str, tuple[int, int]]) -> list[dict]:
+def summary(members: list[Member], counts: dict[str, tuple[int, int]]) -> list[dict[str, object]]:
     rows = []
     for m in members:
         req, tok = counts.get(m.alias, (0, 0))
