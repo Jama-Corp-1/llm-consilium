@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "ruff>=0.6", "mypy", "types-PyYAML", "pip-audit", "build"]
+dev = ["pytest>=8,<10", "ruff>=0.6", "mypy", "types-PyYAML", "pip-audit", "build"]
 
 [project.urls]
 Homepage = "https://github.com/Jama-Corp-1/llm-consilium"
