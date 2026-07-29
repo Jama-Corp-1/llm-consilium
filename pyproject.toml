@@ -56,6 +56,9 @@ select = ["E", "F", "I", "UP", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S"]
+# handlers narrow python-telegram-bot's Optional Update attributes with `assert`
+# (framework invariants inside a registered handler); S101 is expected there.
+"consilium_tg/handlers.py" = ["S101"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["council", "consilium", "consilium_chat", "consilium_tg", "consilium_mcp", "healthcheck"]

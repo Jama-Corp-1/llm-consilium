@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +27,7 @@ def _now() -> str:
 
 
 class BotStore:
-    def __init__(self, db_path, *, default_sensitivity: str = "sensitive") -> None:
+    def __init__(self, db_path: str, *, default_sensitivity: str = "sensitive") -> None:
         self._path = str(db_path)
         self._default_sensitivity = default_sensitivity
         try:
@@ -41,11 +42,11 @@ class BotStore:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _default_settings_row(self) -> dict:
+    def _default_settings_row(self) -> dict[str, object]:
         return {"tool": "council", "mode": "", "sensitivity": self._default_sensitivity,
                 "model": "", "members": "[]", "size": None, "show_footer": 1}
 
-    def active_session(self, chat_id) -> int:
+    def active_session(self, chat_id: int) -> int:
         try:
             with closing(self._connect()) as c:
                 row = c.execute(
@@ -57,7 +58,7 @@ class BotStore:
             return int(row["id"])
         return self.create_session(chat_id)
 
-    def create_session(self, chat_id, title: str = _DEFAULT_TITLE) -> int:
+    def create_session(self, chat_id: int, title: str = _DEFAULT_TITLE) -> int:
         try:
             with closing(self._connect()) as c, c:
                 prev = c.execute(
@@ -76,6 +77,8 @@ class BotStore:
                     "INSERT INTO sessions (chat_id, title, created_at, active) VALUES (?,?,?,1)",
                     (chat_id, title, _now()),
                 )
+                if cur.lastrowid is None:
+                    return -1
                 sid = int(cur.lastrowid)
                 c.execute(
                     "INSERT INTO session_settings "
@@ -88,7 +91,7 @@ class BotStore:
         except (sqlite3.Error, OSError):
             return -1
 
-    def list_sessions(self, chat_id) -> list[dict]:
+    def list_sessions(self, chat_id: int) -> list[dict[str, object]]:
         try:
             with closing(self._connect()) as c:
                 rows = c.execute(
@@ -100,7 +103,7 @@ class BotStore:
         return [{"id": r["id"], "title": r["title"], "created_at": r["created_at"],
                  "active": bool(r["active"])} for r in rows]
 
-    def switch_session(self, chat_id, session_id) -> bool:
+    def switch_session(self, chat_id: int, session_id: int) -> bool:
         try:
             with closing(self._connect()) as c, c:
                 row = c.execute(
@@ -114,14 +117,14 @@ class BotStore:
         except (sqlite3.Error, OSError):
             return False
 
-    def rename_session(self, session_id, title: str) -> None:
+    def rename_session(self, session_id: int, title: str) -> None:
         try:
             with closing(self._connect()) as c, c:
                 c.execute("UPDATE sessions SET title=? WHERE id=?", (title, session_id))
         except (sqlite3.Error, OSError):
             pass
 
-    def delete_session(self, chat_id, session_id) -> None:
+    def delete_session(self, chat_id: int, session_id: int) -> None:
         try:
             with closing(self._connect()) as c, c:
                 was = c.execute(
@@ -140,7 +143,7 @@ class BotStore:
         except (sqlite3.Error, OSError):
             pass
 
-    def maybe_autotitle(self, session_id, content: str) -> None:
+    def maybe_autotitle(self, session_id: int, content: str) -> None:
         try:
             with closing(self._connect()) as c, c:
                 row = c.execute("SELECT title FROM sessions WHERE id=?", (session_id,)).fetchone()
@@ -150,7 +153,7 @@ class BotStore:
         except (sqlite3.Error, OSError):
             pass
 
-    def get_settings(self, session_id) -> dict:
+    def get_settings(self, session_id: int) -> dict[str, object]:
         try:
             with closing(self._connect()) as c:
                 row = c.execute(
@@ -162,14 +165,15 @@ class BotStore:
         d = self._default_settings_row()
         if row:
             d.update({k: row[k] for k in d})
+        raw_members = d["members"]
         try:
-            d["members"] = json.loads(d["members"] or "[]")
+            d["members"] = json.loads(raw_members if isinstance(raw_members, str) else "[]")
         except (ValueError, TypeError):
             d["members"] = []
         d["show_footer"] = bool(d["show_footer"])
         return d
 
-    def set_setting(self, session_id, key: str, value) -> None:
+    def set_setting(self, session_id: int, key: str, value: object) -> None:
         if key not in _SETTABLE:
             return
         try:
@@ -182,21 +186,23 @@ class BotStore:
         except (sqlite3.Error, OSError):
             pass
 
-    def set_members(self, session_id, aliases) -> None:
+    def set_members(self, session_id: int, aliases: Iterable[str]) -> None:
         self.set_setting(session_id, "members", json.dumps(list(aliases)))
 
-    def add_message(self, session_id, role: str, content: str) -> int:
+    def add_message(self, session_id: int, role: str, content: str) -> int:
         try:
             with closing(self._connect()) as c, c:
                 cur = c.execute(
                     "INSERT INTO messages (session_id, role, content, created_at) VALUES (?,?,?,?)",
                     (session_id, role, content, _now()),
                 )
+                if cur.lastrowid is None:
+                    return -1
                 return int(cur.lastrowid)
         except (sqlite3.Error, OSError):
             return -1
 
-    def recent_messages(self, session_id, turns: int) -> list[dict]:
+    def recent_messages(self, session_id: int, turns: int) -> list[dict[str, object]]:
         try:
             with closing(self._connect()) as c:
                 rows = c.execute(

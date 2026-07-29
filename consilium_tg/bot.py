@@ -2,18 +2,29 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from typing import TYPE_CHECKING, Any
 
+from telegram import Update
 from telegram.ext import Application
 
 from consilium_tg import handlers
 from consilium_tg.access import AccessStore
-from consilium_tg.config import load_settings
+from consilium_tg.config import Settings, load_settings
 from consilium_tg.store import BotStore
+
+if TYPE_CHECKING:
+    from telegram.ext import ContextTypes
+
+    from consilium_chat.council_service import CouncilService
 
 _log = logging.getLogger(__name__)
 
+# PTB's Application is generic over six type parameters; this bot does not depend on
+# any of them, so parameterize with Any to satisfy strict typing without the churn.
+_App = Application[Any, Any, Any, Any, Any, Any]
 
-def _build_service():
+
+def _build_service() -> CouncilService | None:
     try:
         from consilium_chat.council_service import CouncilService
 
@@ -23,16 +34,26 @@ def _build_service():
         return None
 
 
-async def _on_error(update, context) -> None:  # pragma: no cover - PTB error hook
+async def _on_error(  # pragma: no cover - PTB error hook
+    update: object, context: ContextTypes.DEFAULT_TYPE
+) -> None:
     _log.error("handler error", exc_info=context.error)
+    if not isinstance(update, Update):
+        return
     with contextlib.suppress(Exception):
-        if getattr(update, "callback_query", None) is not None:
+        if update.callback_query is not None:
             await update.callback_query.answer("Something went wrong.")
-        elif getattr(update, "effective_message", None) is not None:
+        elif update.effective_message is not None:
             await update.effective_message.reply_text("⚠️ Something went wrong.")
 
 
-def build_application(*, settings=None, service=None, store=None, access=None):
+def build_application(
+    *,
+    settings: Settings | None = None,
+    service: CouncilService | None = None,
+    store: BotStore | None = None,
+    access: AccessStore | None = None,
+) -> _App:
     settings = settings or load_settings()
     store = store or BotStore(settings.db_path, default_sensitivity=settings.default_sensitivity)
     access = access or AccessStore(settings.access_path, owner_id=settings.owner_id)
@@ -47,5 +68,5 @@ def build_application(*, settings=None, service=None, store=None, access=None):
     return app
 
 
-def run(app=None) -> None:  # pragma: no cover - starts the polling loop
+def run(app: _App | None = None) -> None:  # pragma: no cover - starts the polling loop
     (app or build_application()).run_polling()

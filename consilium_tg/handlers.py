@@ -3,45 +3,64 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
+    Application,
     CallbackQueryHandler,
     CommandHandler,
+    ContextTypes,
     MessageHandler,
     filters,
 )
 
 from consilium_chat.context import build_prompt
 from consilium_tg import render
+from consilium_tg.access import AccessStore
+from consilium_tg.config import Settings
+from consilium_tg.store import BotStore
 from council.errors import AllMembersFailed, NoEligibleMember, PrivacyRefusal
+from council.types import CouncilResult
+
+if TYPE_CHECKING:
+    from consilium_chat.council_service import CouncilService
 
 _SERVICE_ERRORS = (NoEligibleMember, AllMembersFailed, PrivacyRefusal)
-_MODES = ["", "vote", "judge", "debate", "peer-rank"]
-_SIZES = [None, 3, 4, 5]
+_MODES: list[str] = ["", "vote", "judge", "debate", "peer-rank"]
+_SIZES: list[int | None] = [None, 3, 4, 5]
+
+_Context = ContextTypes.DEFAULT_TYPE
+_Deps = tuple["BotStore", "AccessStore", "CouncilService | None", "Settings"]
+# live-progress bridge: council progress dict, or a terminal ("final", result) /
+# ("error", message) tuple, or None as the stream sentinel.
+_QueueItem = dict[str, object] | tuple[str, CouncilResult | str] | None
+_T = TypeVar("_T")
 
 
-def _as_int(s):
+def _as_int(s: str | int | None) -> int | None:
     try:
-        return int(s)
+        return int(s)  # type: ignore[arg-type]  # None handled by TypeError below
     except (TypeError, ValueError):
         return None
 
 
-def kb(layout) -> InlineKeyboardMarkup:
+def kb(layout: Sequence[Sequence[tuple[str, str]]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton(text, callback_data=data) for (text, data) in row] for row in layout]
     )
 
 
-def _deps(context):
+def _deps(context: _Context) -> _Deps:
     d = context.bot_data
     return d["store"], d["access"], d["service"], d["settings"]
 
 
-async def _ensure_allowed(update, context) -> bool:
+async def _ensure_allowed(update: Update, context: _Context) -> bool:
     _store, access, _service, _settings = _deps(context)
     user = update.effective_user
+    assert user is not None and update.message is not None
     if access.is_allowed(user.id):
         return True
     owner = access.owner_id()
@@ -58,8 +77,9 @@ async def _ensure_allowed(update, context) -> bool:
     return False
 
 
-async def start(update, context) -> None:
+async def start(update: Update, context: _Context) -> None:
     _store, access, _service, _settings = _deps(context)
+    assert update.effective_user is not None and update.message is not None
     if access.is_allowed(update.effective_user.id):
         await update.message.reply_text(
             "Consilium bot — a free-LLM council. Send a message to consult it. "
@@ -70,7 +90,8 @@ async def start(update, context) -> None:
         await _ensure_allowed(update, context)
 
 
-async def help_cmd(update, context) -> None:
+async def help_cmd(update: Update, context: _Context) -> None:
+    assert update.message is not None
     await update.message.reply_text(
         "Ask the free-LLM council.\n"
         "• plain text → ask/council per /settings\n"
@@ -84,19 +105,21 @@ async def help_cmd(update, context) -> None:
     )
 
 
-async def new_session(update, context) -> None:
+async def new_session(update: Update, context: _Context) -> None:
     if not await _ensure_allowed(update, context):
         return
+    assert update.effective_chat is not None and update.message is not None
     store, *_ = _deps(context)
     store.create_session(update.effective_chat.id)
     await update.message.reply_text("Started a fresh session (previous ones kept — /sessions).")
 
 
-async def rename_cmd(update, context) -> None:
+async def rename_cmd(update: Update, context: _Context) -> None:
     if not await _ensure_allowed(update, context):
         return
+    assert update.effective_chat is not None and update.message is not None
     store, *_ = _deps(context)
-    title = " ".join(context.args).strip()
+    title = " ".join(context.args or []).strip()
     if not title:
         await update.message.reply_text("Usage: /rename <new title>")
         return
@@ -105,17 +128,19 @@ async def rename_cmd(update, context) -> None:
     await update.message.reply_text(f"Renamed this session to “{title}”.")
 
 
-async def sessions_cmd(update, context) -> None:
+async def sessions_cmd(update: Update, context: _Context) -> None:
     if not await _ensure_allowed(update, context):
         return
+    assert update.effective_chat is not None and update.message is not None
     store, *_ = _deps(context)
     rows = store.list_sessions(update.effective_chat.id)
     await update.message.reply_text("Sessions:", reply_markup=kb(render.sessions_layout(rows)))
 
 
-async def settings_cmd(update, context) -> None:
+async def settings_cmd(update: Update, context: _Context) -> None:
     if not await _ensure_allowed(update, context):
         return
+    assert update.effective_chat is not None and update.message is not None
     store, *_ = _deps(context)
     sid = store.active_session(update.effective_chat.id)
     await update.message.reply_text(
@@ -124,23 +149,29 @@ async def settings_cmd(update, context) -> None:
     )
 
 
-async def ask_cmd(update, context) -> None:
-    await _run_message(update, context, tool_override="ask", text=" ".join(context.args))
+async def ask_cmd(update: Update, context: _Context) -> None:
+    await _run_message(update, context, tool_override="ask", text=" ".join(context.args or []))
 
 
-async def council_cmd(update, context) -> None:
-    await _run_message(update, context, tool_override="council", text=" ".join(context.args))
+async def council_cmd(update: Update, context: _Context) -> None:
+    await _run_message(update, context, tool_override="council",
+                       text=" ".join(context.args or []))
 
 
-async def on_text(update, context) -> None:
+async def on_text(update: Update, context: _Context) -> None:
+    assert update.message is not None
     await _run_message(update, context, tool_override=None, text=update.message.text)
 
 
-async def _run_message(update, context, *, tool_override, text) -> None:
+async def _run_message(
+    update: Update, context: _Context, *, tool_override: str | None, text: str | None
+) -> None:
     if not await _ensure_allowed(update, context):
         return
+    assert update.effective_chat is not None and update.message is not None
     store, _access, service, settings = _deps(context)
-    if not (text or "").strip():
+    text = text or ""
+    if not text.strip():
         await update.message.reply_text("Send a question.")
         return
     chat_id = update.effective_chat.id
@@ -161,40 +192,60 @@ async def _run_message(update, context, *, tool_override, text) -> None:
         await _run_council(update, service, store, sid, cfg, prompt)
 
 
-async def _send_chunks_reply(update, text) -> None:
+async def _send_chunks_reply(update: Update, text: str) -> None:
+    assert update.message is not None
     parts = render.chunk(text)
     for p in parts:
         await update.message.reply_text(p)
 
 
-async def _run_ask(update, service, store, sid, cfg, prompt) -> None:
+async def _run_ask(
+    update: Update, service: CouncilService, store: BotStore, sid: int,
+    cfg: dict[str, object], prompt: str,
+) -> None:
+    assert update.message is not None
+    model = cfg.get("model")
+    sensitivity = cfg.get("sensitivity", "sensitive")
     try:
-        res = await service.ask(prompt, model=cfg.get("model") or None, capability=None,
-                                sensitivity=cfg.get("sensitivity", "sensitive"))
+        res = await service.ask(prompt, model=str(model) if model else None, capability=None,
+                                sensitivity=str(sensitivity))
     except _SERVICE_ERRORS as exc:
         await update.message.reply_text(f"⚠️ {exc}")
         return
     except Exception as exc:  # noqa: BLE001 - never crash a chat on an unexpected error
         await update.message.reply_text(f"⚠️ internal error: {exc.__class__.__name__}")
         return
-    meta = {"model": res.model_used}
+    meta: dict[str, object] = {"model": res.model_used}
     await _send_chunks_reply(update, render.answer_text(
-        res.answer, meta, show_footer=cfg.get("show_footer", True)))
+        res.answer, meta, show_footer=bool(cfg.get("show_footer", True))))
     store.add_message(sid, "assistant", res.answer)
 
 
-async def _run_council(update, service, store, sid, cfg, prompt) -> None:
-    progress = await update.message.reply_text("\U0001f9e0 Council starting…")
-    q: asyncio.Queue = asyncio.Queue()
+async def _run_council(
+    update: Update, service: CouncilService, store: BotStore, sid: int,
+    cfg: dict[str, object], prompt: str,
+) -> None:
+    assert update.message is not None
+    message = update.message
+    progress = await message.reply_text("\U0001f9e0 Council starting…")
+    q: asyncio.Queue[_QueueItem] = asyncio.Queue()
 
-    def on_progress(evt) -> None:
+    def on_progress(evt: dict[str, object]) -> None:
         q.put_nowait(evt)
+
+    members = cfg.get("members")
+    size = cfg.get("size")
+    mode = cfg.get("mode")
+    sensitivity = cfg.get("sensitivity", "sensitive")
 
     async def run() -> None:
         try:
             res = await service.council(
-                prompt, members=cfg.get("members") or None, size=cfg.get("size"),
-                mode=cfg.get("mode") or None, sensitivity=cfg.get("sensitivity", "sensitive"),
+                prompt,
+                members=list(members) if isinstance(members, list) else None,
+                size=size if isinstance(size, int) else None,
+                mode=str(mode) if mode else None,
+                sensitivity=str(sensitivity),
                 on_progress=on_progress,
             )
             q.put_nowait(("final", res))
@@ -206,10 +257,11 @@ async def _run_council(update, service, store, sid, cfg, prompt) -> None:
             q.put_nowait(None)
 
     task = asyncio.ensure_future(run())
-    roster: list = []
-    done: dict = {}
+    roster: list[str] = []
+    done: dict[str, bool] = {}
     aggregating = False
     last = 0.0
+    show_footer = bool(cfg.get("show_footer", True))
     try:
         while True:
             item = await q.get()
@@ -217,29 +269,31 @@ async def _run_council(update, service, store, sid, cfg, prompt) -> None:
                 break
             if isinstance(item, tuple):
                 kind, payload = item
-                if kind == "final":
-                    meta = {"mode": payload.mode, "confidence": payload.confidence,
-                            "note": payload.note}
+                if kind == "final" and isinstance(payload, CouncilResult):
+                    meta: dict[str, object] = {"mode": payload.mode,
+                                               "confidence": payload.confidence,
+                                               "note": payload.note}
                     parts = render.chunk(render.answer_text(
-                        payload.answer, meta, show_footer=cfg.get("show_footer", True)))
+                        payload.answer, meta, show_footer=show_footer))
                     store.add_message(sid, "assistant", payload.answer)
                     try:
                         await progress.edit_text(parts[0])
                     except Exception:  # noqa: BLE001 - fall back to a fresh message
                         with contextlib.suppress(Exception):
-                            await update.message.reply_text(parts[0])
+                            await message.reply_text(parts[0])
                     for p in parts[1:]:
                         with contextlib.suppress(Exception):
-                            await update.message.reply_text(p)
+                            await message.reply_text(p)
                 else:
                     with contextlib.suppress(Exception):
                         await progress.edit_text(f"⚠️ {payload}")
                 continue
             event = item.get("event")
             if event == "roster":
-                roster = item.get("members", [])
+                raw_members = item.get("members", [])
+                roster = [str(m) for m in raw_members] if isinstance(raw_members, list) else []
             elif event == "member":
-                done[item["alias"]] = item["ok"]
+                done[str(item["alias"])] = bool(item["ok"])
             elif event == "aggregating":
                 aggregating = True
             now = time.monotonic()
@@ -254,8 +308,9 @@ async def _run_council(update, service, store, sid, cfg, prompt) -> None:
             await task
 
 
-async def approve_cmd(update, context) -> None:
+async def approve_cmd(update: Update, context: _Context) -> None:
     _store, access, _service, _settings = _deps(context)
+    assert update.effective_user is not None and update.message is not None
     if not access.is_owner(update.effective_user.id) or not context.args:
         return
     target = _as_int(context.args[0])
@@ -266,8 +321,9 @@ async def approve_cmd(update, context) -> None:
     await update.message.reply_text(f"Approved {target}.")
 
 
-async def deny_cmd(update, context) -> None:
+async def deny_cmd(update: Update, context: _Context) -> None:
     _store, access, _service, _settings = _deps(context)
+    assert update.effective_user is not None and update.message is not None
     if not access.is_owner(update.effective_user.id) or not context.args:
         return
     target = _as_int(context.args[0])
@@ -278,8 +334,9 @@ async def deny_cmd(update, context) -> None:
     await update.message.reply_text(f"Denied {target}.")
 
 
-async def pending_cmd(update, context) -> None:
+async def pending_cmd(update: Update, context: _Context) -> None:
     _store, access, _service, _settings = _deps(context)
+    assert update.effective_user is not None and update.message is not None
     if not access.is_owner(update.effective_user.id):
         return
     pend = access.list_pending()
@@ -287,13 +344,14 @@ async def pending_cmd(update, context) -> None:
     await update.message.reply_text(f"Pending: {body}")
 
 
-def _cycle(seq, cur):
+def _cycle(seq: Sequence[_T], cur: object) -> _T:
     return seq[(seq.index(cur) + 1) % len(seq)] if cur in seq else seq[0]
 
 
-async def on_callback(update, context) -> None:
+async def on_callback(update: Update, context: _Context) -> None:
     store, access, service, _settings = _deps(context)
     query = update.callback_query
+    assert query is not None and update.effective_user is not None
     await query.answer()
     data = query.data or ""
     uid = update.effective_user.id
@@ -315,6 +373,7 @@ async def on_callback(update, context) -> None:
 
     if not access.is_allowed(uid):
         return
+    assert update.effective_chat is not None
     chat_id = update.effective_chat.id
     sid = store.active_session(chat_id)
 
@@ -345,16 +404,18 @@ async def on_callback(update, context) -> None:
     if data == "menu:models" or data.startswith("mdl:"):
         if data.startswith("mdl:"):
             alias = data.split(":", 1)[1]
-            cur = list(store.get_settings(sid).get("members", []))
+            raw_cur = store.get_settings(sid).get("members", [])
+            chosen = [str(a) for a in raw_cur] if isinstance(raw_cur, list) else []
             if alias == "auto":
-                cur = []
-            elif alias in cur:
-                cur = [a for a in cur if a != alias]
+                chosen = []
+            elif alias in chosen:
+                chosen = [a for a in chosen if a != alias]
             else:
-                cur.append(alias)
-            store.set_members(sid, cur)
+                chosen.append(alias)
+            store.set_members(sid, chosen)
         models = service.list_models() if service is not None else []
-        selected = store.get_settings(sid).get("members", [])
+        raw_selected = store.get_settings(sid).get("members", [])
+        selected = [str(a) for a in raw_selected] if isinstance(raw_selected, list) else []
         await query.edit_message_text(
             "Attach council models:",
             reply_markup=kb(render.models_layout(models, selected)))
@@ -380,7 +441,7 @@ async def on_callback(update, context) -> None:
         return
 
 
-def register(application) -> None:
+def register(application: Application[Any, Any, Any, Any, Any, Any]) -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_cmd))
     application.add_handler(CommandHandler("new", new_session))
