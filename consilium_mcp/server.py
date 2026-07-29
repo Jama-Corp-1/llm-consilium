@@ -34,7 +34,7 @@ def _get_orch() -> orch.Orchestrator:
     return _orch
 
 
-def _shape_ask(r: AskResult) -> dict:
+def _shape_ask(r: AskResult) -> dict[str, object]:
     return {
         "answer": r.answer,
         "model_used": r.model_used,
@@ -43,7 +43,7 @@ def _shape_ask(r: AskResult) -> dict:
     }
 
 
-def _shape_council(r: CouncilResult) -> dict:
+def _shape_council(r: CouncilResult) -> dict[str, object]:
     return {
         "answer": r.answer,
         "mode": r.mode,
@@ -62,7 +62,7 @@ def _shape_council(r: CouncilResult) -> dict:
 async def ask(
     prompt: str, model: str | None = None, capability: str | None = None,
     sensitivity: str = "sensitive",
-) -> dict:
+) -> dict[str, object]:
     """Ask ONE best-fit free model for a quick second opinion or cheap bulk step.
 
     prompt: the question. Strip secrets/credentials first (the gate refuses obvious ones).
@@ -83,7 +83,7 @@ async def ask(
 async def council(
     prompt: str, sensitivity: str = "sensitive",
     members: list[str] | None = None, size: int | None = None, mode: str | None = None,
-) -> dict:
+) -> dict[str, object]:
     """Convene the council: fan out to several diverse free models and aggregate.
 
     Use for high-stakes cross-checks where diverse errors matter (costs more free-tier
@@ -117,7 +117,7 @@ async def council(
 
 
 @mcp.tool()
-async def stats(days: int = 1) -> dict:
+async def stats(days: int = 1) -> dict[str, object]:
     """Consilium usage vs daily caps.
 
     days: 1 (default) returns today's per-member summary plus a total cost line;
@@ -126,9 +126,12 @@ async def stats(days: int = 1) -> dict:
     """
     o = _get_orch()
     today_rows = o.usage_summary()
-    out = {
+    total_cost = sum(
+        c for r in today_rows if isinstance(c := r.get("cost_usd", 0.0), (int, float))
+    )
+    out: dict[str, object] = {
         "today": today_rows,
-        "total_cost_usd": round(sum(r.get("cost_usd", 0.0) for r in today_rows), 6),
+        "total_cost_usd": round(total_cost, 6),
     }
     if days > 1:
         out["history"] = o.usage_history(days)

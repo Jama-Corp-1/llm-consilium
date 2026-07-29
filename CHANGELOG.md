@@ -14,5 +14,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `consilium`, `consilium-chat`, `consilium-tg`.
 - OSS infrastructure: CI (ruff + pytest on 3.10–3.13), packaging metadata, Dependabot, CodeQL,
   pip-audit, and community health files.
+- Strict `mypy` type-checking (blocking CI gate).
 
 [0.1.0]: https://github.com/Jama-Corp-1/llm-consilium/releases/tag/v0.1.0

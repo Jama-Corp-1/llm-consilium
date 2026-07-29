@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
+
 _PENDING, _OK, _FAIL = "○", "✓", "✗"
 
 
@@ -7,7 +9,9 @@ def short(alias: str) -> str:
     return alias.split("/", 1)[1] if alias.startswith("council/") else alias
 
 
-def progress_text(roster, done, aggregating: bool) -> str:
+def progress_text(
+    roster: Iterable[str], done: Mapping[str, bool], aggregating: bool
+) -> str:
     lines = ["🧠 Council"]
     for alias in roster:
         if alias not in done:
@@ -19,7 +23,7 @@ def progress_text(roster, done, aggregating: bool) -> str:
     return "\n".join(lines)
 
 
-def answer_text(content: str, meta: dict, *, show_footer: bool) -> str:
+def answer_text(content: str, meta: Mapping[str, object], *, show_footer: bool) -> str:
     if not show_footer or not meta:
         return content
     bits = [str(meta[k]) for k in ("mode", "confidence", "model") if meta.get(k)]
@@ -35,7 +39,7 @@ def chunk(text: str, limit: int = 4096) -> list[str]:
     return [text[i:i + limit] for i in range(0, len(text), limit)] or [""]
 
 
-def settings_layout(settings: dict) -> list[list[tuple[str, str]]]:
+def settings_layout(settings: Mapping[str, object]) -> list[list[tuple[str, str]]]:
     tool = settings.get("tool", "council")
     sens = settings.get("sensitivity", "sensitive")
     mode = settings.get("mode") or "auto"
@@ -50,18 +54,23 @@ def settings_layout(settings: dict) -> list[list[tuple[str, str]]]:
     ]
 
 
-def models_layout(models, selected) -> list[list[tuple[str, str]]]:
+def models_layout(
+    models: Iterable[Mapping[str, object]], selected: Iterable[str] | None
+) -> list[list[tuple[str, str]]]:
     sel = set(selected or [])
     rows = [[("Auto (compose by size)", "mdl:auto")]]
     for m in models:
         mark = "☑" if m["alias"] in sel else "☐"
-        rows.append([(f"{mark} {short(m['alias'])} [{m.get('tier', '?')}]", f"mdl:{m['alias']}")])
+        rows.append([(f"{mark} {short(str(m['alias']))} [{m.get('tier', '?')}]",
+                      f"mdl:{m['alias']}")])
     rows.append([("‹ Back", "menu:settings")])
     return rows
 
 
-def sessions_layout(sessions) -> list[list[tuple[str, str]]]:
-    rows = []
+def sessions_layout(
+    sessions: Iterable[Mapping[str, object]]
+) -> list[list[tuple[str, str]]]:
+    rows: list[list[tuple[str, str]]] = []
     for s in sessions:
         mark = "● " if s.get("active") else "○ "
         rows.append([

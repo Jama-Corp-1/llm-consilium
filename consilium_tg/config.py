@@ -20,7 +20,7 @@ class Settings:
     default_sensitivity: str = "sensitive"
 
 
-def load_settings(env=None) -> Settings:
+def load_settings(env: dict[str, str] | None = None) -> Settings:
     if env is None:
         env = {**env_file.load(), **os.environ}
     d = Settings()

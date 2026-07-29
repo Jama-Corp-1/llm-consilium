@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import getpass
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -53,8 +55,13 @@ def live_ping(
     return PingResult(False, f"HTTP {resp.status_code}")
 
 
-def run(*, env_path=env_file.DEFAULT_ENV_PATH, prompt=getpass.getpass, echo=print,
-        ping=live_ping) -> int:
+def run(
+    *,
+    env_path: str | Path = env_file.DEFAULT_ENV_PATH,
+    prompt: Callable[[str], str] = getpass.getpass,
+    echo: Callable[[str], object] = print,
+    ping: Callable[[Provider, dict[str, str]], PingResult] = live_ping,
+) -> int:
     existing = env_file.load(env_path)
     collected: dict[str, str] = {}
     for provider in PROVIDERS:

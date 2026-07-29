@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "ruff>=0.6", "mypy", "pip-audit", "build"]
+dev = ["pytest>=8,<9", "ruff>=0.6", "mypy", "types-PyYAML", "pip-audit", "build"]
 
 [project.urls]
 Homepage = "https://github.com/Jama-Corp-1/llm-consilium"
@@ -56,6 +56,9 @@ select = ["E", "F", "I", "UP", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S"]
+# handlers narrow python-telegram-bot's Optional Update attributes with `assert`
+# (framework invariants inside a registered handler); S101 is expected there.
+"consilium_tg/handlers.py" = ["S101"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["council", "consilium", "consilium_chat", "consilium_tg", "consilium_mcp", "healthcheck"]
@@ -63,3 +66,12 @@ known-first-party = ["council", "consilium", "consilium_chat", "consilium_tg", "
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "scripts"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["consilium", "consilium_chat", "consilium_tg", "consilium_mcp", "council"]
+
+[[tool.mypy.overrides]]
+module = ["litellm.*", "mcp.*"]
+ignore_missing_imports = true

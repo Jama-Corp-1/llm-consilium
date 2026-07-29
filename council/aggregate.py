@@ -160,7 +160,7 @@ async def _peer_rank(
     block, mapping = anonymize_pairs(pairs, rng=rng)
     codenames = [cn for cn, _ in mapping]
     owner_of = dict(mapping)
-    answer_of_alias = {a.alias: a.answer for a in ok_members}
+    answer_of_alias = {a.alias: a.answer or "" for a in ok_members}
     n = len(codenames)
 
     async def _rank(alias: str) -> tuple[str, list[str] | None]:
@@ -267,7 +267,7 @@ async def aggregate(
     timeout: float = 30.0,
 ) -> AggregateResult:
     ok_members = [a for a in answers if a.ok and a.answer is not None]
-    ok = [a.answer for a in ok_members]
+    ok = [a.answer for a in ok_members if a.answer is not None]
     if not ok:
         raise AllMembersFailed("every member abstained")
     if mode is None:

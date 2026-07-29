@@ -9,6 +9,7 @@ a minimal valid payload rather than a 500, so the app always serves ``/`` and
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import httpx
@@ -27,7 +28,7 @@ from council import orchestrator, registry, usage
 _WEB_DIR = Path(__file__).parent / "web"
 
 
-def is_configured(loaded: dict) -> bool:
+def is_configured(loaded: Mapping[str, str]) -> bool:
     """True iff at least one provider has all of its env vars present."""
     return any(
         all(loaded.get(v) for v in p.env_vars)
@@ -35,10 +36,10 @@ def is_configured(loaded: dict) -> bool:
     )
 
 
-def _make_status_provider():
+def _make_status_provider() -> Callable[[], dict[str, object]]:
     """Build the ``/api/status`` payload from live provider / proxy / usage state."""
 
-    def status_provider() -> dict:
+    def status_provider() -> dict[str, object]:
         try:
             loaded = env_file.load()
             provider_rows = [
@@ -62,7 +63,9 @@ def _make_status_provider():
                 "providers": provider_rows,
                 "proxy_up": proxy_up,
                 "usage": rows,
-                "total_cost_usd": round(sum(r["cost_usd"] for r in rows), 6),
+                "total_cost_usd": round(
+                    sum(c for r in rows if isinstance(c := r["cost_usd"], (int, float))), 6
+                ),
                 "proxy_host": paths.PROXY_HOST,
                 "proxy_port": paths.PROXY_PORT,
             }
@@ -81,19 +84,19 @@ def _make_status_provider():
     return status_provider
 
 
-def _make_save_keys():
+def _make_save_keys() -> Callable[[dict[str, str]], dict[str, object]]:
     """Merge submitted keys into the secure env file; return MASKED values + readiness.
 
     Never returns raw secret values — only ``init.mask(v)``. For each provider whose
     keys are now all present, a best-effort ``live_ping`` records its readiness.
     """
 
-    def save_keys(body: dict) -> dict:
+    def save_keys(body: dict[str, str]) -> dict[str, object]:
         submitted = {k: v for k, v in body.items() if v}
         merged = {**env_file.load(), **submitted}
         env_file.write(values=merged)
         masked = {k: init.mask(v) for k, v in submitted.items()}
-        readiness = []
+        readiness: list[dict[str, object]] = []
         client = httpx.Client(timeout=8.0)
         try:
             for p in providers.PROVIDERS:
@@ -109,8 +112,8 @@ def _make_save_keys():
     return save_keys
 
 
-def _make_proxy_start():
-    def proxy_start() -> dict:
+def _make_proxy_start() -> Callable[[], dict[str, object]]:
+    def proxy_start() -> dict[str, object]:
         try:
             proxy_service.start()
             return {
@@ -123,8 +126,8 @@ def _make_proxy_start():
     return proxy_start
 
 
-def _make_proxy_stop():
-    def proxy_stop() -> dict:
+def _make_proxy_stop() -> Callable[[], dict[str, object]]:
+    def proxy_stop() -> dict[str, object]:
         try:
             proxy_service.stop()
             return {
@@ -137,8 +140,8 @@ def _make_proxy_stop():
     return proxy_stop
 
 
-def _make_proxy_restart():
-    def proxy_restart() -> dict:
+def _make_proxy_restart() -> Callable[[], dict[str, object]]:
+    def proxy_restart() -> dict[str, object]:
         try:
             proxy_service.stop()
             proxy_service.start()
@@ -152,7 +155,12 @@ def _make_proxy_restart():
     return proxy_restart
 
 
-def create_app(*, settings=None, store=None, service=None) -> FastAPI:
+def create_app(
+    *,
+    settings: Settings | None = None,
+    store: ChatStore | None = None,
+    service: CouncilService | None = None,
+) -> FastAPI:
     """Build and wire the chat FastAPI app.
 
     Missing collaborators are constructed with defaults. ``CouncilService.build()``

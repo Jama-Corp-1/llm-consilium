@@ -4,8 +4,18 @@ import os
 import signal
 import socket
 import subprocess
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 from consilium import env_file, paths
+
+Echo = Callable[[str], object]
+Spawn = Callable[..., "subprocess.Popen[bytes]"]
+ExecFn = Callable[[list[str], dict[str, str]], int]
+IsAlive = Callable[[int], bool]
+Terminate = Callable[[int], None]
+PortOpen = Callable[..., bool]
 
 
 def proxy_command() -> list[str]:
@@ -15,7 +25,7 @@ def proxy_command() -> list[str]:
     ]
 
 
-def proxy_env(env_path=env_file.DEFAULT_ENV_PATH) -> dict[str, str]:
+def proxy_env(env_path: str | Path = env_file.DEFAULT_ENV_PATH) -> dict[str, str]:
     env = dict(os.environ)
     env.update(env_file.load(env_path))
     return env
@@ -70,8 +80,15 @@ def _exec(cmd: list[str], env: dict[str, str]) -> int:  # pragma: no cover - rep
     return 0
 
 
-def start(*, foreground: bool = False, spawn=subprocess.Popen, exec_fn=_exec,
-          is_alive=_is_alive, env_path=env_file.DEFAULT_ENV_PATH, echo=print) -> int:
+def start(
+    *,
+    foreground: bool = False,
+    spawn: Spawn = subprocess.Popen,
+    exec_fn: ExecFn = _exec,
+    is_alive: IsAlive = _is_alive,
+    env_path: str | Path = env_file.DEFAULT_ENV_PATH,
+    echo: Echo = print,
+) -> int:
     cmd = proxy_command()
     env = proxy_env(env_path)
     if foreground:
@@ -82,20 +99,21 @@ def start(*, foreground: bool = False, spawn=subprocess.Popen, exec_fn=_exec,
         return 0
     paths.LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     log = open(paths.LOG_PATH, "ab")
-    kwargs: dict = {"env": env, "stdout": log, "stderr": log}
+    kwargs: dict[str, Any] = {"env": env, "stdout": log, "stderr": log}
     if os.name == "posix":
         kwargs["start_new_session"] = True
     else:
-        kwargs["creationflags"] = (
-            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        )
+        # Windows-only subprocess flags; absent from POSIX stubs, so read via getattr.
+        detached = getattr(subprocess, "DETACHED_PROCESS", 0)
+        new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        kwargs["creationflags"] = detached | new_group
     proc = spawn(cmd, **kwargs)
     _write_pid(proc.pid)
     echo(f"started (pid {proc.pid}) — logs: {paths.LOG_PATH}")
     return 0
 
 
-def stop(*, terminate=_terminate, echo=print) -> int:
+def stop(*, terminate: Terminate = _terminate, echo: Echo = print) -> int:
     pid = _read_pid()
     if not pid:
         echo("not running")
@@ -106,9 +124,11 @@ def stop(*, terminate=_terminate, echo=print) -> int:
     return 0
 
 
-def status(*, is_alive=_is_alive, port_open=port_open, echo=print) -> int:
+def status(
+    *, is_alive: IsAlive = _is_alive, port_open: PortOpen = port_open, echo: Echo = print
+) -> int:
     pid = _read_pid()
-    alive = bool(pid) and is_alive(pid)
+    alive = pid is not None and is_alive(pid)
     echo(f"process: {'running (pid ' + str(pid) + ')' if alive else 'stopped'}")
     listening = port_open(paths.PROXY_HOST, paths.PROXY_PORT)
     echo(f"port {paths.PROXY_PORT}: {'listening' if listening else 'closed'}")

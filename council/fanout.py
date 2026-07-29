@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 from council.errors import MemberCallError
 from council.types import AsyncCaller, Member, MemberAnswer
 
+OnMember = Callable[[str, bool], None]
+
 
 async def _call_one(
     member: Member, prompt: str, caller: AsyncCaller, sem: asyncio.Semaphore, timeout: float,
-    on_member=None,
+    on_member: OnMember | None = None,
 ) -> MemberAnswer:
     async with sem:
         try:
@@ -30,7 +33,7 @@ async def _call_one(
 
 async def fan_out(
     prompt: str, members: list[Member], caller: AsyncCaller, *, timeout: float = 30.0,
-    on_member=None,
+    on_member: OnMember | None = None,
 ) -> list[MemberAnswer]:
     # Per-member semaphore (sized to rpm) guards against saturating a member when the
     # same member is called concurrently; harmless at one-call-per-member.

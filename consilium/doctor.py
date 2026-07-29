@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 from consilium import env_file, paths
 from consilium.providers import PROVIDERS
 from consilium.service import port_open as _default_port_open
 
+Runner = Callable[..., "subprocess.CompletedProcess[Any]"]
+Echo = Callable[[str], object]
+PortOpen = Callable[..., bool]
 
-def doctor(*, port_open=_default_port_open, runner=subprocess.run,
-           env_path=env_file.DEFAULT_ENV_PATH, echo=print) -> int:
+
+def doctor(*, port_open: PortOpen = _default_port_open, runner: Runner = subprocess.run,
+           env_path: str | Path = env_file.DEFAULT_ENV_PATH, echo: Echo = print) -> int:
     env = env_file.load(env_path)
     echo("Providers:")
     for provider in PROVIDERS:

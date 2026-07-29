@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Callable
+from typing import Any
 
 from consilium import paths
+
+Runner = Callable[..., "subprocess.CompletedProcess[Any]"]
+Echo = Callable[[str], object]
 
 
 def mcp_add_command() -> list[str]:
@@ -17,7 +22,7 @@ def mcp_remove_command() -> list[str]:
     return ["claude", "mcp", "remove", "--scope", "user", "consilium"]
 
 
-def mcp_register(*, runner=subprocess.run, echo=print) -> int:
+def mcp_register(*, runner: Runner = subprocess.run, echo: Echo = print) -> int:
     runner(mcp_remove_command(), capture_output=True, text=True)  # ignore if absent
     result = runner(mcp_add_command(), capture_output=True, text=True)
     if result.returncode == 0:
@@ -44,7 +49,7 @@ def systemd_unit_text(python: str, repo_root: str) -> str:
     )
 
 
-def install_service(*, runner=subprocess.run, echo=print) -> int:
+def install_service(*, runner: Runner = subprocess.run, echo: Echo = print) -> int:
     if not sys.platform.startswith("linux"):
         echo(
             "Autostart isn't automated on this OS. Run `python -m consilium start` at "

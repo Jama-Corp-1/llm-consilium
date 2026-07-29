@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,7 +15,7 @@ class Settings:
     context_char_budget: int = 6000
 
 
-def load_settings(env=None) -> Settings:
+def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     env = os.environ if env is None else env
     d = Settings()
     return Settings(

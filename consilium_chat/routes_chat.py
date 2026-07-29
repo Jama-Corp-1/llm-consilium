@@ -11,18 +11,23 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from consilium_chat.config import Settings
+from consilium_chat.store import ChatStore
 from council.errors import AllMembersFailed, NoEligibleMember, PrivacyRefusal
+from council.types import CouncilResult
 
 _SERVICE_ERRORS = (NoEligibleMember, AllMembersFailed, PrivacyRefusal)
 _DEFAULT_TITLE = "New chat"
 _TITLE_CHARS = 40
 
 
-def _coerce_size(raw):
+def _coerce_size(raw: str | int | None) -> int | None:
     """Coerce a raw ``size`` (string from JSON/query) to ``int`` or ``None``."""
     try:
         return int(raw) if raw not in (None, "") else None
@@ -30,7 +35,7 @@ def _coerce_size(raw):
         return None
 
 
-def _council_meta(res) -> dict:
+def _council_meta(res: CouncilResult) -> dict[str, object]:
     """Assistant-message meta for a council result (shared by POST + stream)."""
     return {
         "mode": res.mode,
@@ -43,7 +48,7 @@ def _council_meta(res) -> dict:
     }
 
 
-def _maybe_autotitle(store, thread_id: int, content: str) -> None:
+def _maybe_autotitle(store: ChatStore, thread_id: int, content: str) -> None:
     """Set the thread title from the first message if it is still a placeholder."""
     current = next(
         (t["title"] for t in store.list_threads() if t["id"] == thread_id), None
@@ -52,7 +57,9 @@ def _maybe_autotitle(store, thread_id: int, content: str) -> None:
         store.rename_thread(thread_id, content[:_TITLE_CHARS])
 
 
-def _build_prompt(store, settings, thread_id: int, content: str) -> str:
+def _build_prompt(
+    store: ChatStore, settings: Settings, thread_id: int, content: str
+) -> str:
     from consilium_chat.context import build_prompt
 
     # get_messages already includes the just-added user row; drop it so the prompt
@@ -71,39 +78,41 @@ def chat_router() -> APIRouter:
     router = APIRouter()
 
     @router.post("/api/threads")
-    async def create_thread(request: Request):
+    async def create_thread(request: Request) -> dict[str, Any]:
         body = await request.json() if await _has_body(request) else {}
         title = (body or {}).get("title") or _DEFAULT_TITLE
-        store = request.app.state.store
+        store: ChatStore = request.app.state.store
         tid = store.create_thread(title)
         created = next((t for t in store.list_threads() if t["id"] == tid), None)
         return created or {"id": tid, "title": title, "created_at": None}
 
     @router.get("/api/threads")
-    async def list_threads(request: Request):
-        return request.app.state.store.list_threads()
+    async def list_threads(request: Request) -> list[dict[str, Any]]:
+        store: ChatStore = request.app.state.store
+        return store.list_threads()
 
     @router.get("/api/threads/{thread_id}")
-    async def get_thread(thread_id: int, request: Request):
-        return request.app.state.store.get_messages(thread_id)
+    async def get_thread(thread_id: int, request: Request) -> list[dict[str, Any]]:
+        store: ChatStore = request.app.state.store
+        return store.get_messages(thread_id)
 
-    @router.delete("/api/threads/{thread_id}")
-    async def delete_thread(thread_id: int, request: Request):
+    @router.delete("/api/threads/{thread_id}", response_model=None)
+    async def delete_thread(thread_id: int, request: Request) -> dict[str, object]:
         request.app.state.store.delete_thread(thread_id)
         return {"ok": True}
 
-    @router.patch("/api/threads/{thread_id}")
-    async def rename_thread(thread_id: int, request: Request):
+    @router.patch("/api/threads/{thread_id}", response_model=None)
+    async def rename_thread(thread_id: int, request: Request) -> dict[str, object]:
         body = await request.json()
         request.app.state.store.rename_thread(thread_id, body.get("title", ""))
         return {"ok": True}
 
     @router.post("/api/threads/{thread_id}/messages")
-    async def post_message(thread_id: int, request: Request):
+    async def post_message(thread_id: int, request: Request) -> dict[str, Any]:
         body = await request.json()
-        store = request.app.state.store
+        store: ChatStore = request.app.state.store
         service = request.app.state.service
-        settings = request.app.state.settings
+        settings: Settings = request.app.state.settings
 
         content = body.get("content", "")
         tool = body.get("tool", "council")
@@ -151,11 +160,11 @@ def chat_router() -> APIRouter:
             "created_at": _created_at(store, thread_id, mid),
         }
 
-    @router.get("/api/threads/{thread_id}/stream")
-    async def stream_council(thread_id: int, request: Request):
-        store = request.app.state.store
+    @router.get("/api/threads/{thread_id}/stream", response_model=None)
+    async def stream_council(thread_id: int, request: Request) -> StreamingResponse:
+        store: ChatStore = request.app.state.store
         service = request.app.state.service
-        settings = request.app.state.settings
+        settings: Settings = request.app.state.settings
         qp = request.query_params
 
         content = qp.get("content", "")
@@ -167,10 +176,10 @@ def chat_router() -> APIRouter:
         _maybe_autotitle(store, thread_id, content)
         prompt = _build_prompt(store, settings, thread_id, content)
 
-        async def gen():
-            q: asyncio.Queue = asyncio.Queue()
+        async def gen() -> AsyncIterator[str]:
+            q: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
 
-            def on_progress(evt) -> None:
+            def on_progress(evt: dict[str, object]) -> None:
                 q.put_nowait(evt)
 
             async def run() -> None:
@@ -215,7 +224,7 @@ def chat_router() -> APIRouter:
     return router
 
 
-def _created_at(store, thread_id: int, mid: int):
+def _created_at(store: ChatStore, thread_id: int, mid: int) -> object:
     for m in store.get_messages(thread_id):
         if m["id"] == mid:
             return m["created_at"]
