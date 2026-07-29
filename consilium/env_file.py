@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 DEFAULT_ENV_PATH = Path.home() / ".config" / "consilium" / ".env"
@@ -28,7 +29,9 @@ def load(path: str | Path = DEFAULT_ENV_PATH) -> dict[str, str]:
     return values
 
 
-def _group(lines: list[str], title: str, keys, values: dict[str, str]) -> None:
+def _group(
+    lines: list[str], title: str, keys: Iterable[str], values: dict[str, str]
+) -> None:
     present = [k for k in keys if k in values]
     if not present:
         return
