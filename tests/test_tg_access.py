@@ -1,3 +1,5 @@
+import json
+
 from consilium_tg.access import AccessStore
 
 
@@ -28,3 +30,13 @@ def test_degrades_on_bad_path(tmp_path):
     a.request_access(9, "nine")          # no raise
     assert a.is_allowed(7)               # owner still allowed (in-memory)
     assert a.list_pending() == {}        # unreadable -> empty, no raise
+
+
+def test_degrades_on_malformed_content(tmp_path):
+    path = tmp_path / "acc.json"
+    # Both fields are the wrong type: `allowed` should be a list, `pending` a dict.
+    path.write_text(json.dumps({"allowed": "garbage", "pending": "nonsense"}))
+    a = AccessStore(path, owner_id=7)    # no raise
+    assert not a.is_allowed(9)           # fail-closed: nobody but owner leaks through
+    assert a.is_allowed(7)               # owner still allowed
+    assert a.list_pending() == {}        # malformed pending coerced to empty, no raise
