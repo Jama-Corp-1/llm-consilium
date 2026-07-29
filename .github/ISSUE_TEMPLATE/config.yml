@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security report
-    url: https://github.com/Jama123321/llm-consilium/security/advisories/new
+    url: https://github.com/Jama-Corp-1/llm-consilium/security/advisories/new
     about: Report a vulnerability privately (do not open a public issue).

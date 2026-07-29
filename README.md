@@ -1,6 +1,6 @@
 # LLM Consilium
 
-[![CI](https://github.com/Jama123321/llm-consilium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jama123321/llm-consilium/actions/workflows/ci.yml)
+[![CI](https://github.com/Jama-Corp-1/llm-consilium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jama-Corp-1/llm-consilium/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
@@ -38,7 +38,7 @@ key for stays **dormant** — key-presence activates it, so you only run what yo
 Cross-platform (Linux / macOS / Windows). Copy-paste, top to bottom:
 
 ```bash
-git clone https://github.com/Jama123321/llm-consilium && cd llm-consilium
+git clone https://github.com/Jama-Corp-1/llm-consilium && cd llm-consilium
 python -m venv .venv && . .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt                      # litellm[proxy], httpx, pyyaml, mcp, ...
 python -m consilium init                             # enter the free keys you have -> readiness table

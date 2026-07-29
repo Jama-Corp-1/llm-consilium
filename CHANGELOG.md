@@ -15,4 +15,4 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - OSS infrastructure: CI (ruff + pytest on 3.10–3.13), packaging metadata, Dependabot, CodeQL,
   pip-audit, and community health files.
 
-[0.1.0]: https://github.com/Jama123321/llm-consilium/releases/tag/v0.1.0
+[0.1.0]: https://github.com/Jama-Corp-1/llm-consilium/releases/tag/v0.1.0

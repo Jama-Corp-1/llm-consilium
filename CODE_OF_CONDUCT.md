@@ -63,7 +63,7 @@ reported to the community leaders responsible for enforcement by opening a
 private security advisory or otherwise contacting the maintainer privately via
 GitHub:
 
-* https://github.com/Jama123321/llm-consilium/security/advisories/new
+* https://github.com/Jama-Corp-1/llm-consilium/security/advisories/new
 
 All complaints will be reviewed and investigated promptly and fairly.
 

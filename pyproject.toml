@@ -34,9 +34,9 @@ dependencies = [
 dev = ["pytest>=8,<9", "ruff>=0.6", "mypy", "pip-audit", "build"]
 
 [project.urls]
-Homepage = "https://github.com/Jama123321/llm-consilium"
-Repository = "https://github.com/Jama123321/llm-consilium"
-Issues = "https://github.com/Jama123321/llm-consilium/issues"
+Homepage = "https://github.com/Jama-Corp-1/llm-consilium"
+Repository = "https://github.com/Jama-Corp-1/llm-consilium"
+Issues = "https://github.com/Jama-Corp-1/llm-consilium/issues"
 
 [project.scripts]
 consilium = "consilium.__main__:main"

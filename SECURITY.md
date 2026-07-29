@@ -15,7 +15,7 @@ Only the `0.1.x` line receives security fixes.
 Use GitHub's private vulnerability reporting: go to the repository's **Security**
 tab and click **"Report a vulnerability"**, or open a private advisory directly:
 
-- https://github.com/Jama123321/llm-consilium/security/advisories/new
+- https://github.com/Jama-Corp-1/llm-consilium/security/advisories/new
 
 This creates a private advisory visible only to the maintainer, so the issue can
 be triaged and fixed before any public disclosure. Please include enough detail to
