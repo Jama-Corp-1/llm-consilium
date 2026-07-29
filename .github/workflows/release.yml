@@ -17,7 +17,7 @@ jobs:
           python-version: "3.12"
       - run: pip install build
       - run: python -m build
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
