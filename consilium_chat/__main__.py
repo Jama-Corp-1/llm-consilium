@@ -4,6 +4,8 @@ import argparse
 import threading
 import webbrowser
 
+from fastapi import FastAPI
+
 from consilium import env_file
 from consilium_chat.app import create_app, is_configured
 from consilium_chat.config import load_settings
@@ -11,13 +13,13 @@ from consilium_chat.config import load_settings
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
-def _serve(app, host: str, port: int) -> None:
+def _serve(app: FastAPI, host: str, port: int) -> None:
     import uvicorn
 
     uvicorn.run(app, host=host, port=port)
 
 
-def _load_env() -> dict:
+def _load_env() -> dict[str, str]:
     return env_file.load()
 
 
@@ -39,7 +41,7 @@ def _open_browser(url: str, delay: float = 1.0) -> None:
     threading.Timer(delay, go).start()
 
 
-def main(argv=None) -> None:
+def main(argv: list[str] | None = None) -> None:
     settings = load_settings()
     parser = argparse.ArgumentParser(prog="consilium_chat")
     parser.add_argument("--host", default=settings.host)

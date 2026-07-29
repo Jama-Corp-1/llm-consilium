@@ -5,6 +5,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS threads (id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -20,7 +21,7 @@ def _now() -> str:
 
 
 class ChatStore:
-    def __init__(self, db_path) -> None:
+    def __init__(self, db_path: str | Path) -> None:
         self._path = str(db_path)
         try:
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
@@ -39,11 +40,11 @@ class ChatStore:
             with closing(self._connect()) as c, c:
                 cur = c.execute("INSERT INTO threads (title, created_at) VALUES (?, ?)",
                                 (title, _now()))
-                return int(cur.lastrowid)
+                return cur.lastrowid if cur.lastrowid is not None else -1
         except (sqlite3.Error, OSError):
             return -1
 
-    def list_threads(self) -> list[dict]:
+    def list_threads(self) -> list[dict[str, Any]]:
         try:
             with closing(self._connect()) as c:
                 rows = c.execute(
@@ -52,7 +53,7 @@ class ChatStore:
             return []
         return [dict(r) for r in rows]
 
-    def get_messages(self, thread_id: int) -> list[dict]:
+    def get_messages(self, thread_id: int) -> list[dict[str, Any]]:
         try:
             with closing(self._connect()) as c:
                 rows = c.execute(
@@ -60,7 +61,7 @@ class ChatStore:
                     "WHERE thread_id = ? ORDER BY id ASC", (thread_id,)).fetchall()
         except (sqlite3.Error, OSError):
             return []
-        out = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             d = dict(r)
             try:
@@ -70,14 +71,17 @@ class ChatStore:
             out.append(d)
         return out
 
-    def add_message(self, thread_id: int, role: str, content: str, meta=None) -> int:
+    def add_message(
+        self, thread_id: int, role: str, content: str,
+        meta: dict[str, Any] | None = None,
+    ) -> int:
         try:
             with closing(self._connect()) as c, c:
                 cur = c.execute(
                     "INSERT INTO messages (thread_id, role, content, meta, created_at) "
                     "VALUES (?, ?, ?, ?, ?)",
                     (thread_id, role, content, json.dumps(meta or {}), _now()))
-                return int(cur.lastrowid)
+                return cur.lastrowid if cur.lastrowid is not None else -1
         except (sqlite3.Error, OSError):
             return -1
 
