@@ -27,7 +27,7 @@ dependencies = [
     "mcp>=1.0",
     "fastapi>=0.110,<1",
     "uvicorn[standard]>=0.29,<1",
-    "python-telegram-bot>=21,<22",
+    "python-telegram-bot>=21,<23",
 ]
 
 [project.optional-dependencies]
