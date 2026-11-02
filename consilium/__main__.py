@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import sys
 
-from consilium import doctor, init, service, setup
+from consilium import check_env, doctor, health_cmd, init, service, setup
 
 _USAGE = (
     "usage: python -m consilium "
-    "{init|start [--foreground]|stop|status|mcp-register|install-service|doctor}"
+    "{init|start [--foreground]|stop|status|mcp-register|install-service|doctor"
+    "|check-env|health [--json]}"
 )
 
 
@@ -28,6 +29,10 @@ def main(argv: list[str] | None = None) -> int:
         return setup.install_service()
     if cmd == "doctor":
         return doctor.doctor()
+    if cmd == "check-env":
+        return check_env.check_env()
+    if cmd == "health":
+        return health_cmd.health(rest)
     print(_USAGE)
     return 2
 

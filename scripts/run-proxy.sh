@@ -10,7 +10,7 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-required=(GROQ_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_API_BASE LITELLM_MASTER_KEY)
+required=(LITELLM_MASTER_KEY)
 missing=()
 for var in "${required[@]}"; do
   if [[ -z "${!var:-}" ]]; then
@@ -22,19 +22,18 @@ if (( ${#missing[@]} > 0 )); then
   exit 1
 fi
 
-optional=(CEREBRAS_API_KEY MISTRAL_API_KEY NVIDIA_NIM_API_KEY)
-active=(); dormant=()
-for var in "${optional[@]}"; do
-  if [[ -n "${!var:-}" ]]; then active+=("$var"); else dormant+=("$var"); fi
-done
-echo "Optional providers active: ${active[*]:-none}; dormant: ${dormant[*]:-none}" >&2
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Provider readiness (derived from proxy/config.yaml): needs at least one Tier-A provider.
+PY="$REPO_ROOT/.venv/bin/python"
+[[ -x "$PY" ]] || PY=python3
+PYTHONPATH="$REPO_ROOT" "$PY" -m consilium check-env >&2 || exit 1
 
 if [[ -n "${CONSILIUM_CHECK_ONLY:-}" ]]; then
-  echo "OK: all required env vars present (check-only, not launching)"
+  echo "OK: env validated (check-only, not launching)"
   exit 0
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$REPO_ROOT/proxy/config.yaml"
 if [[ ! -f "$CONFIG" ]]; then
   echo "ERROR: proxy config not found: $CONFIG" >&2

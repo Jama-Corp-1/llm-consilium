@@ -25,6 +25,26 @@ def test_dispatch_each_command(monkeypatch):
     assert seen == ["stop", "status", "reg", "svc", "doc"]
 
 
+def test_dispatch_check_env_and_health(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli.check_env, "check_env", lambda: seen.append("check") or 0)
+
+    def fake_health(argv):
+        seen.append(("health", argv))
+        return 1
+
+    monkeypatch.setattr(cli.health_cmd, "health", fake_health)
+    assert cli.main(["check-env"]) == 0
+    assert cli.main(["health", "--json"]) == 1
+    assert seen == ["check", ("health", ["--json"])]
+
+
+def test_usage_lists_new_commands(capsys):
+    cli.main([])
+    out = capsys.readouterr().out
+    assert "check-env" in out and "health" in out
+
+
 def test_unknown_command_returns_usage(capsys):
     assert cli.main(["bogus"]) == 2
     assert cli.main([]) == 2

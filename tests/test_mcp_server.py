@@ -2,28 +2,18 @@ from pathlib import Path
 
 import pytest
 
+from consilium import env_file
 from consilium_mcp import server
 from council.types import AskResult, CouncilResult, MemberAnswer
 
 
-def test_load_master_key_from_env(monkeypatch):
-    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-fromenv")
-    assert server._load_master_key() == "sk-fromenv"
+def test_load_master_key_delegates_to_env_file(monkeypatch):
+    monkeypatch.setattr(env_file, "master_key", lambda: "sk-x")
+    assert server._load_master_key() == "sk-x"
 
 
-def test_load_master_key_from_file(monkeypatch, tmp_path):
-    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
-    home = tmp_path
-    monkeypatch.setattr(server.Path, "home", staticmethod(lambda: home))
-    target = home / ".config" / "consilium" / ".env"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("GROQ_API_KEY=x\nLITELLM_MASTER_KEY=sk-fromfile\n")
-    assert server._load_master_key() == "sk-fromfile"
-
-
-def test_load_master_key_missing_raises(monkeypatch, tmp_path):
-    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
-    monkeypatch.setattr(server.Path, "home", staticmethod(lambda: tmp_path))
+def test_load_master_key_missing_raises(monkeypatch):
+    monkeypatch.setattr(env_file, "master_key", lambda: None)
     with pytest.raises(RuntimeError):
         server._load_master_key()
 

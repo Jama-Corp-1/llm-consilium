@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -8,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from consilium import env_file  # noqa: E402
 from council import orchestrator as orch  # noqa: E402
 from council.types import AskResult, CouncilResult  # noqa: E402
 
@@ -16,15 +16,10 @@ _orch: orch.Orchestrator | None = None
 
 
 def _load_master_key() -> str:
-    key = os.environ.get("LITELLM_MASTER_KEY")
-    if key:
-        return key
-    env_file = Path.home() / ".config" / "consilium" / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            if line.startswith("LITELLM_MASTER_KEY="):
-                return line.split("=", 1)[1].strip()
-    raise RuntimeError("LITELLM_MASTER_KEY not found in env or ~/.config/consilium/.env")
+    key = env_file.master_key()
+    if key is None:
+        raise RuntimeError("LITELLM_MASTER_KEY not found in env or ~/.config/consilium/.env")
+    return key
 
 
 def _get_orch() -> orch.Orchestrator:
