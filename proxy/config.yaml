@@ -1,43 +1,21 @@
 # Consilium LiteLLM proxy — mixed Tier-A/Tier-B free-LLM pool.
 # Secrets are referenced via os.environ/* and loaded from ~/.config/consilium/.env.
-# The privacy_tier tags are read by the Phase 1 council privacy gate;
-# scores are read by the Phase 1 router and council.
+# model_info fields read by the council:
+#   privacy_tier    — A (inference provider does not train/retain) | B (public prompts only).
+#                     Follows the INFERENCE PROVIDER, not the weights' origin.
+#   scores          — per-capability strength 1-5 (reasoning | code | fast | general).
+#   provider_family — diversity key for auto-composition: the WEIGHTS family (openai, qwen,
+#                     meta, ...), so a council mixes model lineages, not just API vendors.
+#   rpd / tpd       — daily caps tracked by the usage store (exhausted members are skipped).
+#
+# Pool refreshed 2026-11-02 against live catalogs (see docs/superpowers/STATUS.md):
+#   - Cerebras: free tier closed (HTTP 402 on every model) -> members removed. If you have a
+#     paid Cerebras plan, re-add `cerebras/gpt-oss-120b` / `cerebras/qwen-3.8-27b` as Tier A.
+#   - GitHub Models: service fully retired 2026-07-30 -> members removed.
+#   - Groq: llama-3.3-70b-versatile withdrawn -> replaced by gpt-oss-20b + qwen3.8-27b.
+#   - SambaNova: members removed until a valid key is configured (old key rejected).
 model_list:
-  # Cerebras free catalog drifted from the 2026 audit (qwen-3-235b / llama-3.3-70b
-  # no longer offered); pinned to live ids verified via GET api.cerebras.ai/v1/models.
-  # NOTE on tier: privacy_tier follows the INFERENCE PROVIDER (Cerebras: no-train /
-  # no-retain ToS), not the weights' origin. zai-glm-4.7 runs on Cerebras, so Zhipu
-  # never sees the prompt -> Tier-A. (Tier-B for GLM would apply only to a direct
-  # open.bigmodel.cn call.)
-  - model_name: council/cerebras-glm-4.7
-    litellm_params:
-      model: cerebras/zai-glm-4.7
-      api_key: os.environ/CEREBRAS_API_KEY
-      rpm: 5
-    model_info:
-      privacy_tier: A
-      scores: {reasoning: 5, code: 4, general: 4}
-      tpd: 1000000
-  - model_name: council/cerebras-gpt-oss-120b
-    litellm_params:
-      model: cerebras/gpt-oss-120b
-      api_key: os.environ/CEREBRAS_API_KEY
-      rpm: 5
-    model_info:
-      privacy_tier: A
-      scores: {reasoning: 4, code: 4, general: 4}
-      tpd: 1000000
-  - model_name: council/groq-llama-70b
-    litellm_params:
-      model: groq/llama-3.3-70b-versatile
-      api_key: os.environ/GROQ_API_KEY
-      rpm: 30
-    model_info:
-      privacy_tier: A
-      scores: {general: 3, fast: 3, code: 3}
-      rpd: 1000
-  # Groq free tier: does NOT train on prompts (the Tier-A criterion); default keeps
-  # 7-day operational logs — full zero-retention needs ZDR (later action, non-blocking).
+  # ---------------- Tier A — Groq (no-train free tier; 7-day ops logs unless ZDR) --------------
   - model_name: council/groq-gpt-oss-120b
     litellm_params:
       model: groq/openai/gpt-oss-120b
@@ -45,8 +23,63 @@ model_list:
       rpm: 30
     model_info:
       privacy_tier: A
+      provider_family: openai
       scores: {reasoning: 4, code: 4, general: 4, fast: 4}
       rpd: 1000
+  - model_name: council/groq-gpt-oss-20b
+    litellm_params:
+      model: groq/openai/gpt-oss-20b
+      api_key: os.environ/GROQ_API_KEY
+      rpm: 30
+    model_info:
+      privacy_tier: A
+      provider_family: openai
+      scores: {fast: 5, general: 3, code: 3}
+      rpd: 1000
+  - model_name: council/groq-qwen3.8-27b
+    litellm_params:
+      model: groq/qwen/qwen3.8-27b
+      api_key: os.environ/GROQ_API_KEY
+      rpm: 30
+    model_info:
+      privacy_tier: A
+      provider_family: qwen
+      scores: {reasoning: 4, code: 4, general: 4, fast: 4}
+      rpd: 1000
+  # ---------------- Tier A — Cloudflare Workers AI (OpenAI-compat shim; free plan) -----------
+  # Workers AI free plan = 10k neurons/day account-wide; tpd below is a per-alias proxy for it.
+  - model_name: council/cloudflare-gpt-oss-120b
+    litellm_params:
+      model: openai/@cf/openai/gpt-oss-120b
+      api_base: os.environ/CLOUDFLARE_API_BASE
+      api_key: os.environ/CLOUDFLARE_API_TOKEN
+    model_info:
+      privacy_tier: A
+      provider_family: openai
+      scores: {reasoning: 4, code: 4, general: 4}
+      tpd: 10000
+  - model_name: council/cloudflare-qwen3.8-27b
+    litellm_params:
+      model: openai/@cf/qwen/qwen3.8-27b
+      api_base: os.environ/CLOUDFLARE_API_BASE
+      api_key: os.environ/CLOUDFLARE_API_TOKEN
+    model_info:
+      privacy_tier: A
+      provider_family: qwen
+      scores: {reasoning: 4, code: 4, general: 4}
+      tpd: 10000
+  - model_name: council/cloudflare-glm-4.7-flash
+    litellm_params:
+      model: openai/@cf/zai-org/glm-4.7-flash
+      api_base: os.environ/CLOUDFLARE_API_BASE
+      api_key: os.environ/CLOUDFLARE_API_TOKEN
+    model_info:
+      privacy_tier: A
+      provider_family: zai
+      # Thinking model: ~5 s on short prompts, can exceed the 30 s call timeout on long
+      # ones -> kept out of reasoning councils; useful as lineage diversity on general.
+      scores: {general: 3, code: 3}
+      tpd: 10000
   - model_name: council/cloudflare-llama-70b
     litellm_params:
       model: openai/@cf/meta/llama-3.3-70b-instruct-fp8-fast
@@ -54,66 +87,60 @@ model_list:
       api_key: os.environ/CLOUDFLARE_API_TOKEN
     model_info:
       privacy_tier: A
+      provider_family: meta
       scores: {general: 3, fast: 3}
       tpd: 10000
-  # --- Phase 2c additions. Model IDs provisional; validated live in Task 9. ---
-  # GitHub Models — documented no-train => Tier A (GPT-class safe tier win).
-  - model_name: council/github-gpt-4.1
+  - model_name: council/cloudflare-llama-4-scout
     litellm_params:
-      model: github/gpt-4.1
-      api_key: os.environ/GITHUB_API_KEY
-      rpm: 10
+      model: openai/@cf/meta/llama-4-scout-17b-16e-instruct
+      api_base: os.environ/CLOUDFLARE_API_BASE
+      api_key: os.environ/CLOUDFLARE_API_TOKEN
     model_info:
       privacy_tier: A
-      scores: {general: 5, code: 5, reasoning: 4}
-      rpd: 50
-  # o-series (o4-mini/o3) are unavailable to this GitHub free tier; gpt-4.1-mini
-  # is the available fast GitHub model (verified live in Task 9).
-  - model_name: council/github-gpt-4.1-mini
+      provider_family: meta
+      scores: {fast: 4, general: 3}
+      tpd: 10000
+  - model_name: council/cloudflare-qwen-coder-32b
     litellm_params:
-      model: github/gpt-4.1-mini
-      api_key: os.environ/GITHUB_API_KEY
-      rpm: 10
+      model: openai/@cf/qwen/qwen2.5-coder-32b-instruct
+      api_base: os.environ/CLOUDFLARE_API_BASE
+      api_key: os.environ/CLOUDFLARE_API_TOKEN
     model_info:
       privacy_tier: A
-      scores: {fast: 5, general: 4, code: 4}
-      rpd: 50
-  # Tier B — free tier trains/retains or undocumented => public prompts only.
-  - model_name: council/mistral-large
+      provider_family: qwen
+      scores: {code: 4, fast: 3}
+      tpd: 10000
+  - model_name: council/cloudflare-nemotron-120b
     litellm_params:
-      model: mistral/mistral-large-latest
+      model: openai/@cf/nvidia/nemotron-3-120b-a12b
+      api_base: os.environ/CLOUDFLARE_API_BASE
+      api_key: os.environ/CLOUDFLARE_API_TOKEN
+    model_info:
+      privacy_tier: A
+      provider_family: nvidia
+      scores: {general: 3, reasoning: 3}
+      tpd: 10000
+  # ---------------- Tier B — free tier trains/retains or undocumented => public only --------
+  # Mistral free "experiment" plan is ~1 request/second -> rpm 1 keeps the fan-out polite.
+  - model_name: council/mistral-large-4
+    litellm_params:
+      model: mistral/mistral-large-4
       api_key: os.environ/MISTRAL_API_KEY
-      rpm: 6
+      rpm: 1
     model_info:
       privacy_tier: B
-      scores: {reasoning: 4, general: 4, code: 3}
+      provider_family: mistral
+      scores: {reasoning: 4, general: 4, code: 4}
   - model_name: council/mistral-codestral
     litellm_params:
       model: mistral/codestral-latest
       api_key: os.environ/MISTRAL_API_KEY
-      rpm: 6
+      rpm: 1
     model_info:
       privacy_tier: B
+      provider_family: mistral
       scores: {code: 5, fast: 4, general: 3}
-  # SambaNova dropped Llama-3.1-405B from the free catalog; DeepSeek-V3.1 is the
-  # available strong model (verified live in Task 9).
-  - model_name: council/sambanova-deepseek-v3
-    litellm_params:
-      model: sambanova/DeepSeek-V3.1
-      api_key: os.environ/SAMBANOVA_API_KEY
-      rpm: 10
-    model_info:
-      privacy_tier: B
-      scores: {reasoning: 4, general: 4, code: 4}
-  - model_name: council/sambanova-llama-70b
-    litellm_params:
-      model: sambanova/Meta-Llama-3.3-70B-Instruct
-      api_key: os.environ/SAMBANOVA_API_KEY
-      rpm: 10
-    model_info:
-      privacy_tier: B
-      scores: {fast: 5, general: 3, code: 3}
-  # NVIDIA NIM — no key this phase; key-presence activation keeps these dormant.
+  # NVIDIA NIM — dormant until NVIDIA_NIM_API_KEY is set (key-presence activation).
   - model_name: council/nvidia-deepseek-r1
     litellm_params:
       model: nvidia_nim/deepseek-ai/deepseek-r1
@@ -121,6 +148,7 @@ model_list:
       rpm: 10
     model_info:
       privacy_tier: B
+      provider_family: deepseek
       scores: {reasoning: 5, general: 3}
   - model_name: council/nvidia-llama-70b
     litellm_params:
@@ -129,6 +157,7 @@ model_list:
       rpm: 10
     model_info:
       privacy_tier: B
+      provider_family: meta
       scores: {general: 3, code: 3, fast: 4}
 router_settings:
   num_retries: 1
@@ -142,8 +171,12 @@ router_settings:
     ContentPolicyViolationErrorRetries: 0
   # Same-tier, same-capability failover only. NEVER route Tier-A -> Tier-B.
   fallbacks:
-    - council/cerebras-glm-4.7: [council/github-gpt-4.1, council/groq-gpt-oss-120b]
-    - council/github-gpt-4.1: [council/cerebras-glm-4.7, council/groq-gpt-oss-120b]
-    - council/groq-llama-70b: [council/cloudflare-llama-70b, council/groq-gpt-oss-120b]
+    - council/groq-gpt-oss-120b: [council/cloudflare-gpt-oss-120b, council/groq-qwen3.8-27b]
+    - council/cloudflare-gpt-oss-120b: [council/groq-gpt-oss-120b]
+    - council/groq-qwen3.8-27b: [council/cloudflare-qwen3.8-27b]
+    - council/cloudflare-qwen3.8-27b: [council/groq-qwen3.8-27b]
+    - council/groq-gpt-oss-20b: [council/cloudflare-llama-4-scout]
+    - council/cloudflare-llama-70b: [council/cloudflare-llama-4-scout, council/groq-gpt-oss-20b]
+    - council/mistral-large-4: [council/mistral-codestral]
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

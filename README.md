@@ -26,8 +26,8 @@ it explicitly.
 
 | Tier | Providers | Use |
 |------|-----------|-----|
-| **A** (no-train) | Cerebras, Groq, Cloudflare Workers AI, GitHub Models | any prompt (incl. private code) |
-| **B** (trains / undocumented) | Mistral, SambaNova, NVIDIA NIM | `public` prompts only |
+| **A** (no-train) | Groq, Cloudflare Workers AI (+ Cerebras on a paid plan) | any prompt (incl. private code) |
+| **B** (trains / undocumented) | Mistral, NVIDIA NIM | `public` prompts only |
 
 The tier follows the **inference provider**, not the origin of the model weights (an
 open-weights model served by a Tier-B provider is still Tier-B). A provider you have no

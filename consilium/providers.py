@@ -16,14 +16,9 @@ class Provider:
 
 PROVIDERS: tuple[Provider, ...] = (
     Provider(
-        "cerebras", "Cerebras", "A", ("CEREBRAS_API_KEY",),
-        "cloud.cerebras.ai -> API Keys (free, 1M tokens/day)",
-        "https://api.cerebras.ai/v1", "zai-glm-4.7",
-    ),
-    Provider(
         "groq", "Groq", "A", ("GROQ_API_KEY",),
         "console.groq.com -> API Keys (free)",
-        "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile",
+        "https://api.groq.com/openai/v1", "openai/gpt-oss-20b",
     ),
     Provider(
         "cloudflare", "Cloudflare Workers AI", "A",
@@ -32,10 +27,12 @@ PROVIDERS: tuple[Provider, ...] = (
         "API base https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1",
         "", "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     ),
+    # Cerebras closed its free tier in 2026 (HTTP 402 without billing); the proxy config
+    # ships no Cerebras member, so this entry only matters for paid-plan users.
     Provider(
-        "github", "GitHub Models", "A", ("GITHUB_API_KEY",),
-        "github.com -> Settings -> Developer settings -> fine-grained token, Models: Read",
-        "https://models.github.ai/inference", "openai/gpt-4.1-mini",
+        "cerebras", "Cerebras", "A", ("CEREBRAS_API_KEY",),
+        "cloud.cerebras.ai -> API Keys (paid plan required since 2026; optional)",
+        "https://api.cerebras.ai/v1", "gpt-oss-120b",
     ),
     Provider(
         "mistral", "Mistral", "B", ("MISTRAL_API_KEY",),

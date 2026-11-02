@@ -7,17 +7,18 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "proxy" / "config.yaml"
 # Expected tier per alias. Pinning the whole map makes mistagging a training
 # provider (Tier B) as Tier A a hard test failure — a privacy regression guard.
 EXPECTED_TIER = {
-    "council/cerebras-glm-4.7": "A",
-    "council/cerebras-gpt-oss-120b": "A",
-    "council/groq-llama-70b": "A",
     "council/groq-gpt-oss-120b": "A",
+    "council/groq-gpt-oss-20b": "A",
+    "council/groq-qwen3.8-27b": "A",
+    "council/cloudflare-gpt-oss-120b": "A",
+    "council/cloudflare-qwen3.8-27b": "A",
+    "council/cloudflare-glm-4.7-flash": "A",
     "council/cloudflare-llama-70b": "A",
-    "council/github-gpt-4.1": "A",
-    "council/github-gpt-4.1-mini": "A",
-    "council/mistral-large": "B",
+    "council/cloudflare-llama-4-scout": "A",
+    "council/cloudflare-qwen-coder-32b": "A",
+    "council/cloudflare-nemotron-120b": "A",
+    "council/mistral-large-4": "B",
     "council/mistral-codestral": "B",
-    "council/sambanova-deepseek-v3": "B",
-    "council/sambanova-llama-70b": "B",
     "council/nvidia-deepseek-r1": "B",
     "council/nvidia-llama-70b": "B",
 }
@@ -25,10 +26,9 @@ EXPECTED_ALIASES = set(EXPECTED_TIER)
 
 # Tier-A safety contract: a Tier-A alias must route through a Tier-A provider
 # prefix, so a Tier-A tag can never silently route through a training provider.
-# `github/` (GitHub Models, no-train) and the `openai/` Cloudflare shim are
-# Tier-A; `openai/` is Tier-A ONLY because api_base pins Cloudflare — enforced
-# by test_openai_shim_aliases_pin_api_base.
-TIER_A_MODEL_PREFIXES = ("cerebras/", "groq/", "openai/", "github/")
+# `openai/` is Tier-A ONLY because api_base pins the Cloudflare Workers AI shim —
+# enforced by test_openai_shim_aliases_pin_api_base.
+TIER_A_MODEL_PREFIXES = ("groq/", "openai/")
 
 
 def _load():
@@ -76,3 +76,20 @@ def test_openai_shim_aliases_pin_api_base():
         if params["model"].startswith("openai/"):
             assert "api_base" in params, m["model_name"]
             assert params["api_base"].startswith("os.environ/"), m["model_name"]
+
+
+def test_fallbacks_stay_within_tier():
+    cfg = _load()
+    tier = {m["model_name"]: m["model_info"]["privacy_tier"] for m in cfg["model_list"]}
+    for entry in cfg["router_settings"]["fallbacks"]:
+        for src, targets in entry.items():
+            assert src in tier, src
+            for dst in targets:
+                assert dst in tier, dst
+                assert tier[dst] == tier[src], f"{src} -> {dst} crosses tiers"
+
+
+def test_every_member_declares_provider_family():
+    cfg = _load()
+    for m in cfg["model_list"]:
+        assert m["model_info"].get("provider_family"), m["model_name"]

@@ -8,10 +8,10 @@ def test_check_models_all_present():
 
 
 def test_check_models_reports_missing():
-    partial = set(hc.EXPECTED_ALIASES) - {"council/groq-llama-70b"}
+    partial = set(hc.EXPECTED_ALIASES) - {"council/groq-gpt-oss-20b"}
     result = hc.check_models(partial, hc.EXPECTED_ALIASES)
     assert not result.ok
-    assert "council/groq-llama-70b" in result.detail
+    assert "council/groq-gpt-oss-20b" in result.detail
 
 
 def test_classify_completion_ok():
@@ -52,4 +52,4 @@ def test_probe_completion_with_mock_transport():
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
     client = httpx.Client(base_url="http://test/v1", transport=httpx.MockTransport(handler))
-    assert hc._probe_completion(client, "groq", "council/groq-llama-70b").ok
+    assert hc._probe_completion(client, "groq", "council/groq-gpt-oss-20b").ok

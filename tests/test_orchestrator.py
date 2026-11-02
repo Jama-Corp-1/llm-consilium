@@ -184,6 +184,33 @@ def test_judge_order_puts_chair_first_when_present():
     assert order[0] == "council/cerebras-glm-4.7"
 
 
+def test_judge_order_derives_chair_from_reasoning_score():
+    # No pin: the strongest "reasoning" member chairs even when listed last and weaker overall.
+    thinker = Member("council/thinker", "A", {"reasoning": 5, "general": 2}, 5, "x")
+    generalist = Member("council/generalist", "A", {"general": 5, "code": 5}, 30, "y")
+    order = Orchestrator([generalist, thinker], Recorder())._judge_order([generalist, thinker])
+    assert order == ["council/thinker", "council/generalist"]
+
+
+def test_judge_order_honours_pinned_chair_when_in_council():
+    o = Orchestrator(ALL, Recorder(), chair_alias=CF.alias)
+    assert o._judge_order([GLM, GROQ, CF])[0] == CF.alias
+    assert o._judge_order([GLM, GROQ])[0] == GLM.alias  # pin absent -> derived
+
+
+def test_classifier_derived_from_fast_score_when_unpinned():
+    sprinter = Member("council/sprinter", "A", {"fast": 5, "general": 2}, 5, "x")
+    o = Orchestrator([GLM, GROQ, sprinter], Recorder())
+    assert o._classifier_for([GLM, GROQ, sprinter]) == "council/sprinter"
+    assert o._classifier_for([GLM, GROQ]) == GROQ.alias  # fast 4 beats GLM's missing fast
+
+
+def test_classifier_pin_honoured_only_when_allowed():
+    o = Orchestrator(ALL, Recorder(), classifier_alias=CF.alias)
+    assert o._classifier_for([GLM, GROQ, CF]) == CF.alias
+    assert o._classifier_for([GLM, GROQ]) == GROQ.alias
+
+
 class _FakeStore:
     def __init__(self, counts):
         self._counts = counts
@@ -231,7 +258,7 @@ def test_build_default_config_path_is_absolute_and_cwd_independent(monkeypatch, 
     monkeypatch.chdir(tmp_path)
     assert Path(orchestrator.DEFAULT_CONFIG_PATH).is_absolute()
     members = registry.load_members(orchestrator.DEFAULT_CONFIG_PATH)  # no key filter -> all
-    assert len(members) == 13  # config found despite the foreign CWD
+    assert len(members) >= 10  # config found despite the foreign CWD
 
 
 def test_council_passes_call_timeout_to_aggregate(monkeypatch):

@@ -3,7 +3,7 @@ from consilium.providers import PROVIDERS, Provider
 
 def test_registry_covers_seven_providers():
     keys = {p.key for p in PROVIDERS}
-    assert keys == {"cerebras", "groq", "cloudflare", "github", "mistral", "sambanova", "nvidia"}
+    assert keys == {"groq", "cloudflare", "cerebras", "mistral", "sambanova", "nvidia"}
 
 
 def test_each_provider_well_formed():
@@ -21,5 +21,5 @@ def test_cloudflare_needs_token_and_base():
 
 def test_tiers_match_project_policy():
     tier = {p.key: p.tier for p in PROVIDERS}
-    assert tier["cerebras"] == tier["groq"] == tier["cloudflare"] == tier["github"] == "A"
+    assert tier["cerebras"] == tier["groq"] == tier["cloudflare"] == "A"
     assert tier["mistral"] == tier["sambanova"] == tier["nvidia"] == "B"

@@ -66,7 +66,7 @@ async def ask(
     """Ask ONE best-fit free model for a quick second opinion or cheap bulk step.
 
     prompt: the question. Strip secrets/credentials first (the gate refuses obvious ones).
-    model: pin a specific member alias (e.g. "council/github-gpt-4.1"); omit to auto-route.
+    model: pin a specific member alias (e.g. "council/groq-gpt-oss-120b"); omit to auto-route.
     capability: force a strength axis — "reasoning" | "code" | "fast" | "general".
         Omit to auto-classify. Ignored when `model` is set.
     sensitivity: "sensitive" (default, Tier-A no-train providers only) or "public"

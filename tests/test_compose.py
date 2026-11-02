@@ -44,3 +44,26 @@ def test_compose_clamps_to_available():
 
 def test_compose_empty_returns_empty():
     assert compose_council([], k=3, capability="general") == []
+
+
+def test_compose_missing_capability_scores_zero_not_best_unrelated():
+    sprinter = Member("sprinter", "A", {"fast": 5}, 30, "x")
+    reasoner = Member("reasoner", "A", {"reasoning": 4}, 10, "y")
+    picked = [m.alias for m in compose_council([sprinter, reasoner], k=1, capability="reasoning")]
+    assert picked == ["reasoner"]
+
+
+def test_compose_diversity_pass_skips_incapable_families():
+    # Two capable members share a family; an incapable member is a distinct family.
+    r1 = Member("r1", "A", {"reasoning": 4}, 30, "same")
+    r2 = Member("r2", "A", {"reasoning": 4}, 10, "same")
+    other = Member("other", "A", {"fast": 5}, 10, "distinct")
+    picked = [m.alias for m in compose_council([other, r1, r2], k=2, capability="reasoning")]
+    assert picked == ["r1", "r2"]  # capable duplicates beat an incapable "diverse" member
+
+
+def test_compose_falls_back_to_strength_when_nobody_has_capability():
+    a = Member("a", "A", {"fast": 3}, 10, "x")
+    b = Member("b", "A", {"code": 5}, 10, "y")
+    picked = [m.alias for m in compose_council([a, b], k=1, capability="reasoning")]
+    assert picked == ["b"]
