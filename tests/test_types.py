@@ -9,7 +9,7 @@ from council.errors import (
     NoEligibleMember,
     PrivacyRefusal,
 )
-from council.types import AskResult, CouncilResult, Member, MemberAnswer
+from council.types import AskResult, CallResult, CouncilResult, Member, MemberAnswer
 
 
 def test_member_is_frozen():
@@ -47,3 +47,12 @@ def test_member_call_error_carries_detail():
 def test_member_cost_per_1k_defaults_zero():
     m = Member(alias="a", privacy_tier="A", scores={"general": 3}, rpm=5)
     assert m.cost_per_1k == 0.0
+
+
+def test_call_result_defaults():
+    assert CallResult("x", "a").fallbacks == 0
+
+
+def test_member_answer_new_defaults():
+    a = MemberAnswer("a", True, "x", "ok")
+    assert a.served_by is None and a.permanent is False

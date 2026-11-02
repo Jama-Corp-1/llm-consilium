@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import pytest
+
 from council import registry
+from council.types import Member
 
 CONFIG = Path(__file__).resolve().parents[1] / "proxy" / "config.yaml"
 
@@ -132,3 +135,84 @@ def test_cost_per_1k_parsed_from_model_info(tmp_path):
     )
     m = {x.alias: x for x in registry.load_members(cfg)}["council/priced"]
     assert m.cost_per_1k == 1.5
+
+
+def test_strip_provider_prefix():
+    assert registry.strip_provider_prefix("groq/openai/gpt-oss-120b") == "openai/gpt-oss-120b"
+    assert registry.strip_provider_prefix("openai/@cf/meta/x") == "@cf/meta/x"
+    assert registry.strip_provider_prefix("plain") == "plain"
+
+
+def test_members_carry_identity_fields():
+    m = _members()["council/cloudflare-llama-70b"]
+    assert m.model_id == "openai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    assert m.vendor == "cloudflare" and m.api_base_ref == "os.environ/CLOUDFLARE_API_BASE"
+    assert m.required_env == frozenset({"CLOUDFLARE_API_BASE", "CLOUDFLARE_API_TOKEN"})
+    g = _members()["council/groq-gpt-oss-120b"]
+    assert g.vendor == "groq" and g.api_base_ref is None
+    assert g.required_env == frozenset({"GROQ_API_KEY"})
+
+
+def test_timeout_parsed_when_present(tmp_path):
+    cfg = tmp_path / "t.yaml"
+    cfg.write_text("model_list:\n  - model_name: council/t\n    litellm_params: {model: groq/x}\n"
+                   "    model_info: {privacy_tier: A, scores: {general: 3}, timeout: 60}\n")
+    assert registry.load_members(cfg)[0].timeout == 60.0
+    assert _members()["council/groq-gpt-oss-120b"].timeout is None
+
+
+def test_providers_derived_from_config():
+    specs = {p.key: p for p in registry.providers(registry.load_members(CONFIG))}
+    assert set(specs) == {"groq", "cloudflare", "mistral", "nvidia_nim"}
+    assert specs["groq"].tier == "A" and specs["mistral"].tier == "B"
+    assert specs["cloudflare"].env_vars == ("CLOUDFLARE_API_BASE", "CLOUDFLARE_API_TOKEN")
+    assert specs["groq"].probe_alias == "council/groq-gpt-oss-20b"       # fast 5
+    assert specs["groq"].probe_model_id == "openai/gpt-oss-20b"
+    assert "council/groq-qwen3.8-27b" in specs["groq"].members
+
+
+def test_providers_rejects_mixed_tier_vendor():
+    a = Member("council/a", "A", {"general": 3}, 10, model_id="groq/a", vendor="groq",
+               required_env=frozenset({"K"}))
+    b = Member("council/b", "B", {"general": 3}, 10, model_id="groq/b", vendor="groq",
+               required_env=frozenset({"K"}))
+    with pytest.raises(ValueError):
+        registry.providers([a, b])
+
+
+def test_served_alias_three_live_shapes():
+    ms = registry.load_members(CONFIG)
+    gpt = "council/groq-gpt-oss-120b"
+    assert registry.served_alias(ms, gpt, gpt, None) == gpt
+    assert registry.served_alias(
+        ms, gpt, "openai/gpt-oss-120b", "https://api.groq.com/openai/v1") == gpt
+    assert registry.served_alias(
+        ms, "council/groq-llama-70b", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", None
+    ) == "council/cloudflare-llama-70b"
+    assert registry.served_alias(ms, "council/x", "nonsense", None) == "council/x"
+
+
+def test_served_alias_disambiguates_by_api_base():
+    a = Member("council/a", "A", {"general": 3}, 10, model_id="openai/x", vendor="cloudflare",
+               api_base_ref="os.environ/CF_BASE")
+    b = Member("council/b", "A", {"general": 3}, 10, model_id="groq/x", vendor="groq")
+    env = {"CF_BASE": "https://cf.example/v1"}
+    assert registry.served_alias(
+        [a, b], "council/zzz", "x", "https://cf.example/v1", env=env) == "council/a"
+    assert registry.served_alias(
+        [a, b], "council/zzz", "x", "https://api.groq.com/openai/v1", env=env) == "council/b"
+
+
+def test_env_values_file_then_process_override(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("# comment\n\nNOEQ\nCONS_A = from-file \nCONS_B=file-b\n")
+    monkeypatch.setenv("CONS_B", "proc-b")
+    monkeypatch.setenv("CONS_C", "")
+    vals = registry.env_values(env_file)
+    assert vals["CONS_A"] == "from-file"
+    assert vals["CONS_B"] == "proc-b"          # non-empty process env wins
+    assert "CONS_C" not in vals and "NOEQ" not in vals
+    empty = tmp_path / "empty.env"
+    empty.write_text("")
+    assert registry.env_values(empty)["CONS_B"] == "proc-b"
+    assert registry.env_values(tmp_path / "missing.env")["CONS_B"] == "proc-b"

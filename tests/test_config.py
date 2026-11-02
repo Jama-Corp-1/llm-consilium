@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "proxy" / "config.yaml"
@@ -93,3 +94,21 @@ def test_every_member_declares_provider_family():
     cfg = _load()
     for m in cfg["model_list"]:
         assert m["model_info"].get("provider_family"), m["model_name"]
+
+
+def test_every_env_ref_documented_in_env_example():
+    cfg = _load()
+    refs = set()
+    for m in cfg["model_list"]:
+        for v in m["litellm_params"].values():
+            if isinstance(v, str) and v.startswith("os.environ/"):
+                refs.add(v.split("/", 1)[1])
+    example = (CONFIG_PATH.parents[1] / ".env.example").read_text()
+    for name in refs:
+        assert f"{name}=" in example, name   # commented-out lines count
+
+
+@pytest.mark.xfail(strict=True, reason="removed in Task 5")
+def test_no_proxy_level_fallbacks():
+    # The council owns failover (spec decision 1).
+    assert "fallbacks" not in _load()["router_settings"]
