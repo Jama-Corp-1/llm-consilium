@@ -180,7 +180,10 @@ def served_alias(
         resolved = _resolve_ref(m.api_base_ref, environ)
         if resolved and resolved.rstrip("/") == wanted:
             return m.alias
-    host = (urlparse(api_base).hostname or api_base).lower()
+    try:
+        host = (urlparse(api_base).hostname or api_base).lower()
+    except ValueError:  # malformed upstream header, e.g. "http://[bad/v1"
+        host = api_base.lower()
     for m in candidates:
         if m.vendor and m.vendor.lower() in host:
             return m.alias

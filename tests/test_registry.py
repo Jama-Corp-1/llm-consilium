@@ -216,3 +216,30 @@ def test_env_values_file_then_process_override(tmp_path, monkeypatch):
     empty.write_text("")
     assert registry.env_values(empty)["CONS_B"] == "proc-b"
     assert registry.env_values(tmp_path / "missing.env")["CONS_B"] == "proc-b"
+
+
+def _ambiguous_pair():
+    a = Member("council/a", "A", {"general": 3}, 10, model_id="openai/x", vendor="cloudflare",
+               api_base_ref="os.environ/CF_BASE")
+    b = Member("council/b", "A", {"general": 3}, 10, model_id="groq/x", vendor="groq")
+    return [a, b]
+
+
+def test_served_alias_malformed_api_base_never_raises():
+    ms = _ambiguous_pair()
+    assert registry.served_alias(ms, "council/zzz", "x", "http://[bad/v1", env={}) == "council/zzz"
+    assert registry.served_alias(ms, "council/zzz", "x", "http://[groq/v1", env={}) == "council/b"
+
+
+def test_served_alias_ambiguous_without_api_base_returns_requested():
+    assert registry.served_alias(_ambiguous_pair(), "council/zzz", "x", None) == "council/zzz"
+
+
+def test_probe_alias_tiebreak_rpm_then_alias():
+    def m(alias, rpm):
+        return Member(alias, "A", {"fast": 4}, rpm, model_id=f"groq/{alias}", vendor="groq")
+
+    probe = registry.providers([m("council/b", 10), m("council/c", 30)])[0].probe_alias
+    assert probe == "council/c"
+    probe = registry.providers([m("council/b", 30), m("council/a", 30)])[0].probe_alias
+    assert probe == "council/a"
