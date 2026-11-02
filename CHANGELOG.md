@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Pin `mcp>=1.0,<2`: the 2.x SDK renamed `FastMCP` to `MCPServer`, which broke CI installs from an
+  unconstrained `mcp>=1.0`; the 2.x migration is a deliberate follow-up, not a pip-drift side effect.
+
 ### Added
 - **Health store** (`~/.config/consilium/health.json`): permanent provider errors (401/402/403/404,
   model gone) mark a member down; 429/5xx/timeouts never do. New CLI commands
