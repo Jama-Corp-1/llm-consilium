@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 from collections.abc import Callable
 from pathlib import Path
 
 from council import aggregate as agg
 from council import client, compose, fanout, privacy, registry, router, usage
+from council import health as health_module
 from council import runlog as runlog_module
 from council.errors import AllMembersFailed, MemberCallError, NoEligibleMember, PrivacyRefusal
-from council.types import AskResult, AsyncCaller, CouncilResult, Member
+from council.types import (
+    AskResult,
+    AsyncCaller,
+    CallResult,
+    CouncilResult,
+    DetailedCaller,
+    Member,
+    MemberAnswer,
+)
 
 DEFAULT_BASE_URL = "http://127.0.0.1:4000/v1"
 # Absolute so the user-scope MCP server finds the config no matter which project
@@ -19,22 +30,27 @@ DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parents[1] / "proxy" / "confi
 # of the chosen council. A pin is honoured only when it survived the privacy gate.
 CLASSIFIER_ALIAS: str | None = None
 CHAIR_ALIAS: str | None = None
+ALL_DOWN_NOTE = "all members marked down; retrying"
 
 
 class Orchestrator:
     def __init__(
         self,
         members: list[Member],
-        caller: AsyncCaller,
+        caller: AsyncCaller | DetailedCaller,
         *,
         classifier_alias: str | None = CLASSIFIER_ALIAS,
         chair_alias: str | None = CHAIR_ALIAS,
         store: usage.UsageStore | None = None,
         runlog: runlog_module.RunLog | None = None,
         call_timeout: float = 30.0,
+        health: health_module.HealthStore | None = None,
     ) -> None:
         self._members = members
-        self._caller = caller
+        self._caller = caller  # as given: plain-text (AsyncCaller) or DetailedCaller
+        self._detailed: DetailedCaller = self._call_detailed
+        self._plain: AsyncCaller = self._call_plain  # classify + aggregate consume text
+        self._health = health
         self._classifier_alias = classifier_alias
         self._chair_alias = chair_alias
         self._store = store
@@ -58,7 +74,89 @@ class Orchestrator:
         return self._store.counts() if self._store is not None else {}
 
     def usage_summary(self) -> list[dict[str, object]]:
-        return usage.summary(self._members, self._counts())
+        return usage.summary(self._members, self._counts(), self._health)
+
+    def health_probed_at(self) -> str | None:
+        return self._health.probed_at() if self._health is not None else None
+
+    # -- caller adaptation ----------------------------------------------
+
+    async def _call_detailed(self, alias: str, prompt: str) -> CallResult:
+        res = await self._caller(alias, prompt)
+        if isinstance(res, str):  # plain-text caller: it can only report the requested alias
+            return CallResult(res, alias)
+        return res
+
+    async def _call_plain(self, alias: str, prompt: str) -> str:
+        return (await self._detailed(alias, prompt)).content
+
+    # -- health / timeouts ----------------------------------------------
+
+    def _down(self) -> set[str]:
+        return self._health.down_aliases() if self._health is not None else set()
+
+    def _pool(self, allowed: list[Member]) -> tuple[list[Member], str | None]:
+        """Tier-gated ``allowed`` -> (pool, note): healthy and under cap first.
+
+        Every fallback stays inside ``allowed``, so the privacy gate is never widened.
+        """
+        down = self._down()
+        candidates = usage.available(allowed, self._counts())
+        healthy = [m for m in candidates if m.alias not in down]
+        if healthy:
+            return healthy, None
+        if candidates:
+            return candidates, ALL_DOWN_NOTE
+        # every member is exhausted: existing behaviour -- fall back to the whole gated set
+        if any(m.alias in down for m in allowed):
+            return allowed, ALL_DOWN_NOTE
+        return allowed, None
+
+    def _timeout_for(self, m: Member) -> float:
+        return m.timeout or self._call_timeout
+
+    def _agg_timeout(self, chosen: list[Member]) -> float:
+        return max((self._timeout_for(m) for m in chosen), default=self._call_timeout)
+
+    def _record(self, answer: MemberAnswer) -> None:
+        """Feed one member outcome into the shared health store (no-op without one)."""
+        if self._health is None:
+            return
+        if not answer.ok:
+            if answer.permanent:
+                self._health.mark_down(
+                    answer.alias, answer.detail, ttl_s=health_module.CALL_TTL_S
+                )
+            return
+        # A proxy fallback means the requested alias did not serve; credit the one that did.
+        served = answer.served_by or answer.alias
+        if served in self._health.down_aliases():
+            self._health.mark_up(served)
+
+    async def _call_member(self, member: Member, prompt: str) -> CallResult:
+        """One ``ask`` call under the member's own timeout, with health bookkeeping.
+
+        A timeout surfaces as a transient ``MemberCallError("timeout")``; ``ProxyError``
+        propagates untouched (no health change).
+        """
+        try:
+            res = await asyncio.wait_for(
+                self._detailed(member.alias, prompt), self._timeout_for(member)
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise MemberCallError(member.alias, "timeout") from exc
+        except MemberCallError as exc:
+            self._record(
+                MemberAnswer(member.alias, False, None, exc.detail, permanent=exc.permanent)
+            )
+            raise
+        served_by = res.served_alias if res.served_alias != member.alias else None
+        self._record(MemberAnswer(member.alias, True, res.content, "ok", served_by=served_by))
+        return res
+
+    @staticmethod
+    def _served_note(requested: str, served: str) -> str:
+        return "" if served == requested else f"; served by {served} (proxy fallback)"
 
     def usage_history(self, days: int = 7) -> list[dict[str, object]]:
         return self._store.history(days) if self._store is not None else []
@@ -86,25 +184,31 @@ class Orchestrator:
                 raise PrivacyRefusal(
                     f"model {model} is not available for sensitivity={sensitivity}"
                 )
-            answer = await self._caller(member.alias, prompt)
-            return AskResult(answer=answer, model_used=member.alias, capability=None, note="direct")
-        pool = usage.available(allowed, self._counts()) or allowed
+            res = await self._call_member(member, prompt)
+            note = "direct" + self._served_note(member.alias, res.served_alias)
+            return AskResult(
+                answer=res.content, model_used=res.served_alias, capability=None, note=note
+            )
+        pool, pool_note = self._pool(allowed)
         auto = capability is None
         if capability is None:
             capability = await router.classify(
-                prompt, caller=self._caller, classifier_alias=self._classifier_for(allowed)
+                prompt, caller=self._plain, classifier_alias=self._classifier_for(allowed)
             )
         errors: list[str] = []
         for member in router.rank(pool, capability):
             try:
-                answer = await self._caller(member.alias, prompt)
+                res = await self._call_member(member, prompt)
             except MemberCallError as exc:
                 errors.append(f"{member.alias}[{exc.detail}]")
                 continue
             trail = " -> ".join([*errors, member.alias])
             note = f"{'auto-routed' if auto else 'routed'}: {capability} -> {trail}"
+            if pool_note:
+                note += f"; {pool_note}"
+            note += self._served_note(member.alias, res.served_alias)
             return AskResult(
-                answer=answer, model_used=member.alias, capability=capability, note=note
+                answer=res.content, model_used=res.served_alias, capability=capability, note=note
             )
         raise AllMembersFailed(f"all '{capability}' members failed: {', '.join(errors)}")
 
@@ -117,10 +221,11 @@ class Orchestrator:
         allowed = privacy.allowed_members(self._members, sensitivity)
         if not allowed:
             raise NoEligibleMember("no members available for the requested sensitivity")
-        pool = usage.available(allowed, self._counts()) or allowed
-        notes: list[str] = []
+        pool, pool_note = self._pool(allowed)
+        notes: list[str] = [pool_note] if pool_note else []
 
         if members is not None:
+            down = self._down()
             allowed_by_alias = {m.alias for m in allowed}
             pool_by_alias = {m.alias: m for m in pool}
             roster: list[Member] = []
@@ -133,6 +238,9 @@ class Orchestrator:
                 elif alias not in allowed_by_alias:
                     tier = known.privacy_tier
                     notes.append(f"dropped {alias} (tier {tier} blocked on {sensitivity})")
+                elif alias in down and self._health is not None:
+                    reason = self._health.status_of(alias)[1]
+                    notes.append(f"dropped {alias} (down: {reason})")
                 else:
                     notes.append(f"dropped {alias} (exhausted)")
             if roster:
@@ -150,14 +258,20 @@ class Orchestrator:
             if on_progress is not None else None
         )
         answers = await fanout.fan_out(
-            prompt, chosen, self._caller, timeout=self._call_timeout,
+            prompt, chosen, self._detailed, timeout=self._call_timeout,
             **({"on_member": on_member} if on_progress is not None else {}),
         )
+        for answer in answers:
+            self._record(answer)
+        served = [f"{a.alias}->{a.served_by}" for a in answers if a.ok and a.served_by]
+        if served:
+            notes.append(f"fallback-served: {', '.join(served)}")
         if on_progress is not None:
             on_progress({"event": "aggregating"})
         result = await agg.aggregate(
-            prompt, answers, caller=self._caller,
-            judge_aliases=self._judge_order(chosen), mode=mode, timeout=self._call_timeout,
+            prompt, answers, caller=self._plain,
+            judge_aliases=self._judge_order(chosen), mode=mode,
+            timeout=self._agg_timeout(chosen),
         )
         self._log_council(
             {
@@ -175,6 +289,7 @@ class Orchestrator:
                         "ok": a.ok,
                         "tier": self._tier_of(a.alias),
                         "answer": a.answer,
+                        "served_by": a.served_by,
                     }
                     for a in answers
                 ],
@@ -194,7 +309,7 @@ class Orchestrator:
         size: int | None, notes: list[str],
     ) -> list[Member]:
         capability = await router.classify(
-            prompt, caller=self._caller, classifier_alias=self._classifier_for(allowed)
+            prompt, caller=self._plain, classifier_alias=self._classifier_for(allowed)
         )
         k = size if size is not None else compose.adaptive_k(capability)
         chosen = compose.compose_council(pool, k=k, capability=capability)
@@ -225,10 +340,9 @@ def build(
 ) -> Orchestrator:
     members = registry.load_members(config_path, available_keys=registry.available_env_keys())
     store = usage.UsageStore()
-    detailed = client.make_caller(base_url, api_key, recorder=store.record)
-
-    async def caller(alias: str, prompt: str) -> str:
-        # Temporary bridge: the orchestrator still consumes plain text.
-        return (await detailed(alias, prompt)).content
-
-    return Orchestrator(members, caller, store=store, runlog=runlog_module.RunLog())
+    resolve = functools.partial(registry.served_alias, members, env=registry.env_values())
+    caller = client.make_caller(base_url, api_key, recorder=store.record, resolve=resolve)
+    return Orchestrator(
+        members, caller, store=store, runlog=runlog_module.RunLog(),
+        health=health_module.HealthStore(),
+    )

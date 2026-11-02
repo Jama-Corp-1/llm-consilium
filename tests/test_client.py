@@ -247,7 +247,9 @@ def test_classify_error_table():
     assert client.classify_error(402, "CerebrasException - Payment required")[1] is True
     assert client.classify_error(404, "GroqException - model does not exist")[1] is True
     assert client.classify_error(400, "OpenAIException - Model zai-glm-4.7 is archived")[1] is True
-    assert client.classify_error(400, "openaiexception - MODEL NOT FOUND")[1] is True
+    assert client.classify_error(400, "OpenAIException - MODEL NOT FOUND")[1] is True
+    # the marker itself is case-sensitive: a lowercase "...exception" is not a provider marker
+    assert client.classify_error(400, "openaiexception - MODEL NOT FOUND")[1] is False
     assert client.classify_error(400, "OpenAIException - bad request")[1] is False
     assert client.classify_error(400, "model does not exist")[1] is False  # hint without marker
     assert client.classify_error(429, "whatever") == ("429 rate-limited", False)
@@ -356,3 +358,16 @@ def test_make_caller_forwards_resolver():
 
     caller = client.make_caller("http://x/v1", "k", resolve=resolve)
     assert caller.keywords["resolve"] is resolve
+
+
+def test_resolver_exception_falls_back_to_requested_alias():
+    def resolve(req, body_model, api_base):
+        raise RuntimeError("boom")
+
+    out = asyncio.run(
+        client.complete(
+            "http://x/v1", "k", "council/a", "hi",
+            transport=_transport(200, _ok_body(model="x")), resolve=resolve,
+        )
+    )
+    assert out == CallResult("ok", "council/a", 0)

@@ -82,3 +82,19 @@ def test_store_survives_unwritable_path(tmp_path):
     store = usage.UsageStore(blocker / "nested" / "u.db")
     store.record("r", 5)          # must not raise
     assert store.counts() == {}   # degrades to empty
+
+
+def test_summary_health_columns_default_unknown(tmp_path):
+    from council.health import HealthStore
+
+    timed = Member("x", "A", {"general": 3}, 5, "x", timeout=45.0)
+    rows = {r["alias"]: r for r in usage.summary([UNCAPPED, timed], {})}
+    assert rows["u"]["health"] == "unknown" and rows["u"]["health_reason"] == ""
+    assert rows["u"]["timeout"] is None and rows["x"]["timeout"] == 45.0
+    health = HealthStore(tmp_path / "h.json")
+    health.mark_down("x", "402 payment required", ttl_s=60)
+    health.mark_up("u")
+    rows = {r["alias"]: r for r in usage.summary([UNCAPPED, timed], {}, health)}
+    assert rows["x"]["health"] == "down"
+    assert rows["x"]["health_reason"] == "402 payment required"
+    assert rows["u"]["health"] == "up"

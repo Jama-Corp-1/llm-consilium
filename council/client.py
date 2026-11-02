@@ -18,8 +18,9 @@ _BACKOFF_DELAYS = (0.5, 1.0)
 _MAX_RETRY_AFTER = 30.0
 
 # LiteLLM wraps provider failures as "<Provider>Exception - ..."; a proxy-level
-# rejection (e.g. bad master key) carries no such marker. Matched case-insensitively.
-PROVIDER_MARKER = re.compile(r"\b[A-Za-z_]+Exception\b", re.IGNORECASE)
+# rejection (e.g. bad master key) carries no such marker. Case-sensitive on purpose:
+# LiteLLM exception class names are capitalised ("GroqException").
+PROVIDER_MARKER = re.compile(r"\b[A-Za-z_]+Exception\b")
 MODEL_GONE_HINTS = (
     "not found",
     "does not exist",
@@ -140,11 +141,14 @@ def _extract(
     served = alias
     if resolve is not None:
         body_model = data.get("model") if isinstance(data, dict) else None
-        served = resolve(
-            alias,
-            body_model if isinstance(body_model, str) else None,
-            resp.headers.get("x-litellm-model-api-base"),
-        )
+        try:
+            served = resolve(
+                alias,
+                body_model if isinstance(body_model, str) else None,
+                resp.headers.get("x-litellm-model-api-base"),
+            )
+        except Exception:  # noqa: BLE001 - attribution is telemetry; never fail a served call
+            served = alias
     # A 200 means the provider served (and metered) the request, so record it before
     # validating the body — otherwise an empty/malformed 200 would silently under-count
     # usage against the daily cap. Usage is charged to the alias that actually served.

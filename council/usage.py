@@ -5,6 +5,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from council.health import HealthStore
 from council.types import Member
 
 DEFAULT_DB_PATH = Path.home() / ".config" / "consilium" / "usage.db"
@@ -89,10 +90,15 @@ def available(members: list[Member], counts: dict[str, tuple[int, int]]) -> list
     return [m for m in members if not _exhausted(m, counts)]
 
 
-def summary(members: list[Member], counts: dict[str, tuple[int, int]]) -> list[dict[str, object]]:
+def summary(
+    members: list[Member],
+    counts: dict[str, tuple[int, int]],
+    health: HealthStore | None = None,
+) -> list[dict[str, object]]:
     rows = []
     for m in members:
         req, tok = counts.get(m.alias, (0, 0))
+        status, reason = health.status_of(m.alias) if health is not None else ("unknown", "")
         rows.append(
             {
                 "alias": m.alias,
@@ -103,6 +109,9 @@ def summary(members: list[Member], counts: dict[str, tuple[int, int]]) -> list[d
                 "tpd": m.tpd,
                 "exhausted": _exhausted(m, counts),
                 "cost_usd": round(tok / 1000 * m.cost_per_1k, 6),
+                "health": status,
+                "health_reason": reason,
+                "timeout": m.timeout,
             }
         )
     return rows
