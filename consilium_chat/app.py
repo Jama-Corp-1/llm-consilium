@@ -176,13 +176,14 @@ def create_app(
     settings: Settings | None = None,
     store: ChatStore | None = None,
     service: CouncilService | None = None,
+    provs: tuple[providers.Provider, ...] | None = None,
 ) -> FastAPI:
     """Build and wire the chat FastAPI app.
 
     Missing collaborators are constructed with defaults. ``CouncilService.build()``
     is guarded: if it fails (no proxy / keys yet) the service is left ``None`` and the
     app still serves ``/`` and ``/api/status``; chat routes just won't work until a
-    proxy exists.
+    proxy exists. ``provs`` defaults to the guarded config-derived providers.
     """
     settings = settings or load_settings()
     if not isinstance(settings, Settings):  # defensive: unexpected override type
@@ -198,7 +199,8 @@ def create_app(
     app.state.settings = settings
     app.state.store = store
     app.state.service = service
-    provs = _load_providers()  # read proxy/config.yaml once per app
+    if provs is None:
+        provs = _load_providers()  # read proxy/config.yaml once per app
     app.state.status_provider = _make_status_provider(provs)
     app.state.save_keys = _make_save_keys(provs)
     app.state.proxy_start = _make_proxy_start()

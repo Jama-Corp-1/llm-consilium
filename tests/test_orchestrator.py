@@ -616,3 +616,22 @@ def test_classifier_proxy_error_propagates():
 
     with pytest.raises(ProxyError):
         asyncio.run(Orchestrator(ALL, ProxyDown()).ask("q"))
+
+
+def test_classifier_failure_keeps_recomputed_pool_note(tmp_path):
+    # GROQ is the only member: once the classifier (GROQ) is marked down, the recomputed
+    # pool is "all down" -- that note must survive into the council result.
+    health = HealthStore(tmp_path / "h.json")
+    gone = MemberCallError(GROQ.alias, "404 model not found", permanent=True)
+
+    class ClassifierGone(Detailed):
+        async def __call__(self, alias, prompt):
+            if "Classify" in prompt:
+                self.calls.append(alias)
+                raise gone
+            return await super().__call__(alias, prompt)
+
+    c = asyncio.run(Orchestrator([GROQ], ClassifierGone(), health=health)
+                    .council("explain the tradeoffs in depth please"))
+    assert "classifier failed (404 model not found); defaulting to general" in c.note
+    assert "all members marked down; retrying" in c.note

@@ -17,9 +17,9 @@ PortOpen = Callable[..., bool]
 Probe = Callable[[], list[health_cmd.ProbeOutcome]]
 
 
-def _live_probe(api_key: str) -> list[health_cmd.ProbeOutcome]:
+def _live_probe(api_key: str, env_path: str | Path) -> list[health_cmd.ProbeOutcome]:
     members = registry.load_members(
-        paths.CONFIG_PATH, available_keys=registry.available_env_keys()
+        paths.CONFIG_PATH, available_keys=registry.available_env_keys(env_path)
     )
     return asyncio.run(
         health_cmd.probe_members(members, orchestrator.DEFAULT_BASE_URL, api_key)
@@ -46,8 +46,12 @@ def doctor(*, port_open: PortOpen = _default_port_open, runner: Runner = subproc
     if not up or key is None:
         echo("Health: skipped (proxy down or no master key)")
         return 0
-    outcomes = probe() if probe is not None else _live_probe(key)
-    store = store if store is not None else HealthStore()
-    health_cmd.apply(outcomes, store)
+    try:
+        outcomes = probe() if probe is not None else _live_probe(key, env_path)
+        store = store if store is not None else HealthStore()
+        health_cmd.apply(outcomes, store)
+    except Exception as exc:  # noqa: BLE001 - doctor is best-effort diagnostics; never crash
+        echo(f"Health: error ({type(exc).__name__})")
+        return 0
     echo(health_cmd.render(outcomes, store.probed_at()))
     return 0

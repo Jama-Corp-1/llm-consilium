@@ -185,3 +185,16 @@ def test_health_never_echoes_key(tmp_path):
     for statuses in ({}, {"/models": 401}, {"g1": (404, "GroqException - gone")}):
         _, _, out, _ = _health(tmp_path, statuses, [_m("g1", "groq")])
         assert all(KEY not in line for line in out)
+
+
+def test_probe_members_unexpected_error_is_unknown_and_run_continues():
+    def handler(request):
+        if b'"g1"' in request.content:
+            raise RuntimeError("unexpected")
+        return httpx.Response(200, json={"choices": []})
+
+    outcomes = asyncio.run(health_cmd.probe_members(
+        [_m("g1", "groq"), _m("c1", "cloudflare")], BASE, KEY,
+        transport=httpx.MockTransport(handler)))
+    assert outcomes[0].status == "unknown" and outcomes[0].reason == "RuntimeError"
+    assert outcomes[1].status == "up"

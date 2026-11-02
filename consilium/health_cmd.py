@@ -69,6 +69,8 @@ async def _probe_one(
         error = "timeout"
     except httpx.HTTPError as exc:
         error = type(exc).__name__
+    except Exception as exc:  # noqa: BLE001 - one bad probe must never abort the run
+        error = type(exc).__name__
     ms = int((time.monotonic() - start) * 1000)
     status, reason = classify_probe(status_code, body, error)
     return ProbeOutcome(m.alias, m.privacy_tier, status, reason, ms)

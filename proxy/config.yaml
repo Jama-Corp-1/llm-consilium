@@ -171,6 +171,7 @@ router_settings:
     RateLimitErrorRetries: 0
     AuthenticationErrorRetries: 0
     ContentPolicyViolationErrorRetries: 0
-  # No proxy-level fallbacks: the council owns failover (ask walks the ranked list, council drops a failed voter); a proxy fallback would hide a dead member behind a 200.
+  # No proxy-level fallbacks: the council owns failover (ask walks the ranked list,
+  # council drops a failed voter); a proxy fallback would hide a dead member behind a 200.
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

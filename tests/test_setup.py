@@ -46,3 +46,46 @@ def test_install_service_linux_writes_unit(tmp_path, monkeypatch):
     unit = (tmp_path / "user" / "consilium-proxy.service").read_text()
     assert "consilium start --foreground" in unit
     assert "systemctl" in ran and "loginctl" in ran
+
+
+def test_health_unit_text_fields():
+    unit = setup.systemd_health_unit_text("/venv/bin/python", "/home/u/repo")
+    assert "Description=Consilium health probe" in unit
+    assert "After=consilium-proxy.service" in unit
+    assert "Type=oneshot" in unit
+    assert "WorkingDirectory=/home/u/repo" in unit and "PYTHONPATH=/home/u/repo" in unit
+    assert "ExecStart=/venv/bin/python -m consilium health" in unit
+
+
+def test_health_timer_text_fields():
+    timer = setup.systemd_health_timer_text()
+    assert "[Timer]" in timer
+    assert "OnBootSec=2min" in timer
+    assert "OnUnitActiveSec=30min" in timer
+    assert "Persistent=true" in timer
+    assert "WantedBy=timers.target" in timer
+
+
+def test_install_service_writes_timer_and_enables_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(paths, "SYSTEMD_USER_DIR", tmp_path)
+    calls = []
+
+    def runner(cmd, **kw):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert setup.install_service(runner=runner, echo=lambda _m: None) == 0
+    service = (tmp_path / "consilium-health.service").read_text()
+    timer = (tmp_path / "consilium-health.timer").read_text()
+    assert "-m consilium health" in service
+    assert "OnUnitActiveSec=30min" in timer
+    assert ["systemctl", "--user", "daemon-reload"] in calls
+    assert ["systemctl", "--user", "enable", "--now", "consilium-health.timer"] in calls
+
+
+def test_install_service_non_linux_mentions_health(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    said = []
+    setup.install_service(runner=lambda *a, **k: None, echo=said.append)
+    assert any("-m consilium health" in m for m in said)

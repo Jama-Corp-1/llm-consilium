@@ -335,7 +335,9 @@ class Orchestrator:
         capability, classify_note = await self._classify(prompt, allowed, pool)
         if classify_note:
             notes.append(classify_note)
-            pool = self._pool(allowed)[0]  # the classifier may just have been marked down
+            pool, pool_note = self._pool(allowed)  # the classifier may just have gone down
+            if pool_note and pool_note not in notes:
+                notes.append(pool_note)
         k = size if size is not None else compose.adaptive_k(capability)
         chosen = compose.compose_council(pool, k=k, capability=capability)
         notes.append(f"auto: {capability}, k={len(chosen)}")

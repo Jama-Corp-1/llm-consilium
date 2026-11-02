@@ -105,8 +105,8 @@ async def council(
     Returns: {answer, mode, judge_used, disagreements, per_member, note, confidence}.
         `note` records roster decisions (auto capability/size, dropped members,
         fallbacks). `confidence` (high/medium/low) is the chair's confidence the
-        synthesized answer is correct. Each `per_member` entry also carries `served_by`,
-        the alias that actually answered when a fallback replaced the requested member.
+        synthesized answer is correct. Each `per_member` entry also carries `served_by`:
+        the alias that actually served, when it differs from `alias`; normally null.
     """
     return _shape_council(
         await _get_orch().council(

@@ -79,3 +79,40 @@ def test_doctor_skips_health_when_proxy_down(tmp_path):
                   echo=out.append, store=HealthStore(tmp_path / "health.json"), probe=probe)
     assert called == []
     assert out[-1] == "Health: skipped (proxy down or no master key)"
+
+
+def test_doctor_probe_error_is_best_effort(tmp_path):
+    envf = tmp_path / ".env"
+    env_file.write(envf, {"GROQ_API_KEY": "gsk-x", "LITELLM_MASTER_KEY": "sk-secret"})
+
+    def boom():
+        raise RuntimeError("probe exploded")
+
+    out = []
+    rc = doctor.doctor(port_open=lambda _h, _p: True, runner=_runner("consilium"),
+                       env_path=envf, echo=out.append,
+                       store=HealthStore(tmp_path / "health.json"), probe=boom)
+    assert rc == 0
+    assert out[-1] == "Health: error (RuntimeError)"
+    assert "sk-secret" not in "\n".join(out)
+
+
+def test_doctor_live_probe_uses_env_path_for_members(tmp_path, monkeypatch):
+    envf = tmp_path / ".env"
+    env_file.write(envf, {"GROQ_API_KEY": "gsk-x", "LITELLM_MASTER_KEY": "sk-secret"})
+    seen = {}
+
+    def fake_keys(path):
+        seen["path"] = path
+        return {"GROQ_API_KEY"}
+
+    async def fake_probe(members, base_url, api_key):
+        seen["members"] = [m.alias for m in members]
+        return []
+
+    monkeypatch.setattr(doctor.registry, "available_env_keys", fake_keys)
+    monkeypatch.setattr(doctor.health_cmd, "probe_members", fake_probe)
+    rc = doctor.doctor(port_open=lambda _h, _p: True, runner=_runner("consilium"),
+                       env_path=envf, echo=lambda _m: None,
+                       store=HealthStore(tmp_path / "health.json"))
+    assert rc == 0 and seen["path"] == envf
