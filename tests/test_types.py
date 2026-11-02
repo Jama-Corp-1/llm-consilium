@@ -56,3 +56,13 @@ def test_call_result_defaults():
 def test_member_answer_new_defaults():
     a = MemberAnswer("a", True, "x", "ok")
     assert a.served_by is None and a.permanent is False
+
+
+def test_member_call_error_permanent_flag_and_proxy_error():
+    from council.errors import ConsiliumError, MemberCallError, ProxyError
+
+    err = MemberCallError("council/a", "boom")
+    assert err.permanent is False and err.alias == "council/a" and err.detail == "boom"
+    assert MemberCallError("council/a", "gone", permanent=True).permanent is True
+    assert issubclass(ProxyError, ConsiliumError)
+    assert not issubclass(ProxyError, MemberCallError)

@@ -225,5 +225,10 @@ def build(
 ) -> Orchestrator:
     members = registry.load_members(config_path, available_keys=registry.available_env_keys())
     store = usage.UsageStore()
-    caller = client.make_caller(base_url, api_key, recorder=store.record)
+    detailed = client.make_caller(base_url, api_key, recorder=store.record)
+
+    async def caller(alias: str, prompt: str) -> str:
+        # Temporary bridge: the orchestrator still consumes plain text.
+        return (await detailed(alias, prompt)).content
+
     return Orchestrator(members, caller, store=store, runlog=runlog_module.RunLog())
