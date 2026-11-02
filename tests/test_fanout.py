@@ -65,10 +65,10 @@ def test_fan_out_reports_progress_per_member():
 
 
 def test_fanout_waits_member_timeout_not_default():
-    patient = Member("p", "A", {"general": 3}, 5, "p", timeout=0.3)
+    patient = Member("p", "A", {"general": 3}, 5, "p", timeout=1.0)
 
     async def caller(alias, prompt):
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.1)
         return CallResult("ok", alias)
 
     (ans,) = asyncio.run(fanout.fan_out("q", [patient], caller, timeout=0.05))

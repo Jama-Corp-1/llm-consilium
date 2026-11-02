@@ -543,3 +543,76 @@ def test_proxy_error_aborts_ask_without_health_change(tmp_path):
     with pytest.raises(ProxyError):
         asyncio.run(o.council("explain please", members=[GLM.alias, CF.alias]))
     assert health.snapshot() == {}
+
+
+def test_fallback_success_marks_up_served_alias_not_requested(tmp_path):
+    health = HealthStore(tmp_path / "h.json")
+    health.mark_down(GROQ.alias, "402 x", ttl_s=600)
+    health.mark_down(CF.alias, "402 y", ttl_s=600)
+    o = Orchestrator(ALL, Detailed(served={GROQ.alias: CF.alias}), health=health)
+    r = asyncio.run(o.ask("q", model=GROQ.alias))
+    assert r.model_used == CF.alias
+    assert CF.alias not in health.down_aliases()
+    assert GROQ.alias in health.down_aliases()
+
+
+def test_classifier_skips_down_member(tmp_path):
+    # unpinned classifier = strongest "fast": GROQ (4) > CF (3); GROQ is down -> CF classifies
+    health = HealthStore(tmp_path / "h.json")
+    health.mark_down(GROQ.alias, "402 x", ttl_s=600)
+    det = Detailed()
+    o = Orchestrator(ALL, det, health=health)
+    r = asyncio.run(o.ask("prove a theorem"))
+    assert det.calls[0] == CF.alias  # the classify call
+    assert GROQ.alias not in det.calls
+    assert r.capability == "reasoning" and r.model_used == GLM.alias
+
+
+def test_classifier_permanent_failure_defaults_to_general(tmp_path):
+    health = HealthStore(tmp_path / "h.json")
+    gone = MemberCallError(GROQ.alias, "404 model not found", permanent=True)
+
+    class ClassifierGone(Detailed):
+        async def __call__(self, alias, prompt):
+            if alias == GROQ.alias and "Classify" in prompt:
+                self.calls.append(alias)
+                raise gone
+            return await super().__call__(alias, prompt)
+
+    det = ClassifierGone()
+    o = Orchestrator(ALL, det, health=health)
+    r = asyncio.run(o.ask("q"))
+    assert r.capability == "general" and r.model_used == GLM.alias
+    assert "classifier failed (404 model not found); defaulting to general" in r.note
+    assert health.status_of(GROQ.alias) == ("down", "404 model not found")
+    assert det.calls.count(GROQ.alias) == 1  # not retried in the walk once marked down
+    # council: same degradation lands in the notes; the next classify skips GROQ
+    c = asyncio.run(Orchestrator(ALL, ClassifierGone(), health=HealthStore(tmp_path / "h2.json"))
+                    .council("explain the tradeoffs in depth please"))
+    assert "classifier failed (404 model not found); defaulting to general" in c.note
+    assert "auto: general" in c.note
+    assert GROQ.alias not in {a.alias for a in c.per_member}
+
+
+def test_classifier_timeout_defaults_to_general():
+    slowfast = Member("council/slowfast", "A", {"fast": 5, "general": 1}, 5, "sf")
+    gen = Member("council/gen", "A", {"general": 4}, 5, "gv")
+
+    async def caller(alias, prompt):
+        if alias == slowfast.alias:
+            await asyncio.sleep(0.5)
+        return "reasoning" if "Classify" in prompt else "answer"
+
+    o = Orchestrator([slowfast, gen], caller, call_timeout=0.05)
+    r = asyncio.run(o.ask("q"))
+    assert r.capability == "general" and r.model_used == gen.alias
+    assert "classifier failed (timeout); defaulting to general" in r.note
+
+
+def test_classifier_proxy_error_propagates():
+    class ProxyDown(Detailed):
+        async def __call__(self, alias, prompt):
+            raise ProxyError("proxy rejected the request: HTTP 401")
+
+    with pytest.raises(ProxyError):
+        asyncio.run(Orchestrator(ALL, ProxyDown()).ask("q"))

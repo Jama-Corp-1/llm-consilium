@@ -49,7 +49,7 @@ class Orchestrator:
         self._members = members
         self._caller = caller  # as given: plain-text (AsyncCaller) or DetailedCaller
         self._detailed: DetailedCaller = self._call_detailed
-        self._plain: AsyncCaller = self._call_plain  # classify + aggregate consume text
+        self._plain: AsyncCaller = self._call_plain  # aggregate consumes plain text
         self._health = health
         self._classifier_alias = classifier_alias
         self._chair_alias = chair_alias
@@ -172,6 +172,28 @@ class Orchestrator:
             return pin
         return max(allowed, key=lambda m: (m.scores.get("fast", 0), m.rpm)).alias
 
+    async def _classify(
+        self, prompt: str, allowed: list[Member], pool: list[Member]
+    ) -> tuple[str, str | None]:
+        """Classify via the strongest healthy "fast" member -> (capability, note).
+
+        The classifier is picked from the health-filtered ``pool`` (``allowed`` only if the
+        pool is empty), runs under its own timeout with health bookkeeping, and a member
+        failure degrades to "general" instead of failing the call. ProxyError propagates.
+        """
+        alias = self._classifier_for(pool or allowed)
+        member = self._by_alias(alias)
+        if member is None:  # pragma: no cover - _classifier_for only returns known members
+            raise NoEligibleMember(f"classifier {alias} is not a council member")
+
+        async def call(_alias: str, text: str) -> str:
+            return (await self._call_member(member, text)).content
+
+        try:
+            return await router.classify(prompt, caller=call, classifier_alias=alias), None
+        except MemberCallError as exc:
+            return "general", f"classifier failed ({exc.detail}); defaulting to general"
+
     async def ask(
         self, prompt: str, *, model: str | None = None, capability: str | None = None,
         sensitivity: str = "sensitive",
@@ -191,10 +213,11 @@ class Orchestrator:
             )
         pool, pool_note = self._pool(allowed)
         auto = capability is None
+        classify_note: str | None = None
         if capability is None:
-            capability = await router.classify(
-                prompt, caller=self._plain, classifier_alias=self._classifier_for(allowed)
-            )
+            capability, classify_note = await self._classify(prompt, allowed, pool)
+            if classify_note:
+                pool, pool_note = self._pool(allowed)  # the classifier may just have gone down
         errors: list[str] = []
         for member in router.rank(pool, capability):
             try:
@@ -204,8 +227,9 @@ class Orchestrator:
                 continue
             trail = " -> ".join([*errors, member.alias])
             note = f"{'auto-routed' if auto else 'routed'}: {capability} -> {trail}"
-            if pool_note:
-                note += f"; {pool_note}"
+            for extra in (classify_note, pool_note):
+                if extra:
+                    note += f"; {extra}"
             note += self._served_note(member.alias, res.served_alias)
             return AskResult(
                 answer=res.content, model_used=res.served_alias, capability=capability, note=note
@@ -308,9 +332,10 @@ class Orchestrator:
         self, prompt: str, allowed: list[Member], pool: list[Member],
         size: int | None, notes: list[str],
     ) -> list[Member]:
-        capability = await router.classify(
-            prompt, caller=self._plain, classifier_alias=self._classifier_for(allowed)
-        )
+        capability, classify_note = await self._classify(prompt, allowed, pool)
+        if classify_note:
+            notes.append(classify_note)
+            pool = self._pool(allowed)[0]  # the classifier may just have been marked down
         k = size if size is not None else compose.adaptive_k(capability)
         chosen = compose.compose_council(pool, k=k, capability=capability)
         notes.append(f"auto: {capability}, k={len(chosen)}")
