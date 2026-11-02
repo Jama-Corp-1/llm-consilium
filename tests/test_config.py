@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import pytest
 import yaml
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "proxy" / "config.yaml"
@@ -79,17 +78,6 @@ def test_openai_shim_aliases_pin_api_base():
             assert params["api_base"].startswith("os.environ/"), m["model_name"]
 
 
-def test_fallbacks_stay_within_tier():
-    cfg = _load()
-    tier = {m["model_name"]: m["model_info"]["privacy_tier"] for m in cfg["model_list"]}
-    for entry in cfg["router_settings"]["fallbacks"]:
-        for src, targets in entry.items():
-            assert src in tier, src
-            for dst in targets:
-                assert dst in tier, dst
-                assert tier[dst] == tier[src], f"{src} -> {dst} crosses tiers"
-
-
 def test_every_member_declares_provider_family():
     cfg = _load()
     for m in cfg["model_list"]:
@@ -108,7 +96,13 @@ def test_every_env_ref_documented_in_env_example():
         assert f"{name}=" in example, name   # commented-out lines count
 
 
-@pytest.mark.xfail(strict=True, reason="removed in Task 5")
 def test_no_proxy_level_fallbacks():
     # The council owns failover (spec decision 1).
     assert "fallbacks" not in _load()["router_settings"]
+
+
+def test_thinking_members_declare_timeout():
+    by = {m["model_name"]: m for m in _load()["model_list"]}
+    assert by["council/cloudflare-qwen3.8-27b"]["model_info"]["timeout"] == 60
+    assert by["council/cloudflare-glm-4.7-flash"]["model_info"]["timeout"] == 60
+    assert "timeout" not in by["council/groq-gpt-oss-120b"]["model_info"]
