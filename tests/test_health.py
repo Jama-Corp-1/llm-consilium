@@ -164,3 +164,65 @@ def test_lock_sidecar_created_with_fcntl(tmp_path: Path) -> None:
         pytest.skip("fcntl unavailable")
     HealthStore(tmp_path / "health.json").mark_up("council/a")
     assert (tmp_path / "health.json.lock").exists()
+
+
+def _write_raw(path: Path, data: dict[str, object]) -> None:
+    path.write_text(json.dumps(data))
+
+
+def test_naive_until_does_not_raise(tmp_path: Path) -> None:
+    path = tmp_path / "health.json"
+    _write_raw(
+        path,
+        {
+            "council/far": {"status": "down", "reason": "x", "until": "2099-01-01T00:00:00"},
+            "council/past": {"status": "down", "reason": "y", "until": "2000-01-01T00:00:00"},
+        },
+    )
+    store = HealthStore(path)
+    assert store.down_aliases() == {"council/far"}
+    assert store.status_of("council/far") == ("down", "x")
+    assert store.status_of("council/past") == ("unknown", "")
+
+
+def test_mixed_naive_aware_probe_stamps(tmp_path: Path) -> None:
+    path = tmp_path / "health.json"
+    _write_raw(
+        path,
+        {
+            "a": {"last_probe": {"status": "up", "reason": "", "at": "2026-01-01T00:00:00"}},
+            "b": {"last_probe": {"status": "up", "reason": "", "at": "2026-02-01T00:00:00+00:00"}},
+            "c": {"last_probe": {"status": "up", "reason": "", "at": "garbage"}},
+        },
+    )
+    assert HealthStore(path).probed_at() == "2026-02-01T00:00:00+00:00"
+
+
+def test_naive_injected_clock_is_read_as_utc(tmp_path: Path) -> None:
+    naive = [datetime(2026, 1, 1, 12, 0, 0)]
+    store = HealthStore(tmp_path / "health.json", now=lambda: naive[0])
+    store.mark_down("council/a", "boom", ttl_s=60)
+    assert store.down_aliases() == {"council/a"}
+    naive[0] = datetime(2026, 1, 1, 12, 5, 0)
+    assert store.down_aliases() == set()
+
+
+@pytest.mark.parametrize("ttl", [float("nan"), float("inf"), 1e30])
+def test_bad_ttl_does_not_raise_and_falls_back(tmp_path: Path, ttl: float) -> None:
+    clock = Clock()
+    store = HealthStore(tmp_path / "health.json", now=clock)
+    store.mark_down("council/a", "boom", ttl_s=ttl)
+    assert store.down_aliases() == {"council/a"}
+    clock.advance(health.CALL_TTL_S + 1)
+    assert store.down_aliases() == set()
+
+
+def test_since_kept_while_still_down(tmp_path: Path) -> None:
+    clock = Clock()
+    store = HealthStore(tmp_path / "health.json", now=clock)
+    store.mark_down("council/a", "first", ttl_s=3600)
+    first_since = store.snapshot()["council/a"]["since"]
+    clock.advance(30)
+    store.mark_down("council/a", "second", ttl_s=3600)
+    rec = store.snapshot()["council/a"]
+    assert rec["since"] == first_since and rec["reason"] == "second"

@@ -25,6 +25,20 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _aware(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _parse(value: object) -> datetime | None:
+    """Parse an ISO-8601 string to an aware UTC datetime; None if it is not one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return _aware(datetime.fromisoformat(value))
+    except (ValueError, TypeError):
+        return None
+
+
 class HealthStore:
     """Shared, best-effort JSON store of per-alias member health.
 
@@ -79,7 +93,7 @@ class HealthStore:
         handle = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            handle = open(self._path.with_name(self._path.name + ".lock"), "a")
+            handle = open(self._path.with_name(self._path.name + ".lock"), "a", encoding="utf-8")
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         except OSError:
             if handle is not None:
@@ -103,10 +117,14 @@ class HealthStore:
                 apply(rec)
                 data[alias] = rec
                 self._write(data)
-        except OSError:
+        except (OSError, ValueError, OverflowError, TypeError):
             pass  # never crash a call on telemetry
 
     # -- helpers -------------------------------------------------------
+
+    def _clock(self) -> datetime:
+        """Current time as an aware UTC datetime (a naive injected clock is read as UTC)."""
+        return _aware(self._now())
 
     def _is_down(self, rec: Record, now: datetime) -> bool:
         if rec.get("status") != "down":
@@ -114,29 +132,29 @@ class HealthStore:
         until = rec.get("until")
         if until is None:
             return True
-        try:
-            return datetime.fromisoformat(str(until)) > now
-        except ValueError:
-            return False  # malformed expiry must not block a member forever
+        parsed = _parse(until)
+        return parsed is not None and parsed > now  # malformed expiry never blocks forever
 
     # -- mutations -----------------------------------------------------
 
     def mark_down(self, alias: str, reason: str, *, ttl_s: float, source: str = "call") -> None:
-        now = self._now()
+        now = self._clock()
+        try:
+            until = (now + timedelta(seconds=ttl_s)).isoformat()
+        except (ValueError, OverflowError, TypeError):
+            # nan/inf/huge/non-numeric ttl: fall back to the default call ttl, never "forever"
+            until = (now + timedelta(seconds=CALL_TTL_S)).isoformat()
 
         def apply(rec: Record) -> None:
-            rec.update(
-                status="down",
-                reason=reason,
-                since=now.isoformat(),
-                until=(now + timedelta(seconds=ttl_s)).isoformat(),
-                source=source,
-            )
+            since = now.isoformat()
+            if self._is_down(rec, now) and isinstance(rec.get("since"), str):
+                since = str(rec["since"])  # "down since" = first failure of this streak
+            rec.update(status="down", reason=reason, since=since, until=until, source=source)
 
         self._update(alias, apply)
 
     def mark_up(self, alias: str, *, source: str = "call") -> None:
-        now = self._now()
+        now = self._clock()
 
         def apply(rec: Record) -> None:
             rec.update(status="up", reason="", since=now.isoformat(), until=None, source=source)
@@ -144,7 +162,7 @@ class HealthStore:
         self._update(alias, apply)
 
     def note_probe(self, alias: str, status: str, reason: str) -> None:
-        now = self._now()
+        now = self._clock()
 
         def apply(rec: Record) -> None:
             rec["last_probe"] = {"status": status, "reason": reason, "at": now.isoformat()}
@@ -157,7 +175,7 @@ class HealthStore:
         return copy.deepcopy(self._read())
 
     def down_aliases(self) -> set[str]:
-        now = self._now()
+        now = self._clock()
         return {a for a, rec in self._read().items() if self._is_down(rec, now)}
 
     def status_of(self, alias: str) -> tuple[str, str]:
@@ -166,7 +184,7 @@ class HealthStore:
             return ("unknown", "")
         status = rec.get("status")
         if status == "down":
-            if self._is_down(rec, self._now()):
+            if self._is_down(rec, self._clock()):
                 return ("down", str(rec.get("reason", "")))
             return ("unknown", "")
         if status == "up":
@@ -180,10 +198,7 @@ class HealthStore:
             if not isinstance(probe, dict):
                 continue
             at = probe.get("at")
-            if not isinstance(at, str):
-                continue
-            try:
-                stamps.append((datetime.fromisoformat(at), at))
-            except ValueError:
-                continue
+            parsed = _parse(at)
+            if isinstance(at, str) and parsed is not None:
+                stamps.append((parsed, at))
         return max(stamps)[1] if stamps else None
