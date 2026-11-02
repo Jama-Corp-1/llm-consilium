@@ -17,17 +17,17 @@ DEFAULT_BASE_URL = "http://127.0.0.1:4000/v1"
 REQUEST_TIMEOUT = 30.0
 
 EXPECTED_ALIASES = (
-    "council/cerebras-glm-4.7",
-    "council/cerebras-gpt-oss-120b",
-    "council/groq-llama-70b",
     "council/groq-gpt-oss-120b",
+    "council/groq-gpt-oss-20b",
+    "council/groq-qwen3.8-27b",
+    "council/cloudflare-gpt-oss-120b",
+    "council/cloudflare-qwen3.8-27b",
     "council/cloudflare-llama-70b",
 )
 
 # One representative alias per provider (proves that key + route work end-to-end).
 PROVIDER_PROBES = {
-    "cerebras": "council/cerebras-glm-4.7",
-    "groq": "council/groq-llama-70b",
+    "groq": "council/groq-gpt-oss-20b",
     "cloudflare": "council/cloudflare-llama-70b",
 }
 

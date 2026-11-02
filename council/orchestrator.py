@@ -13,9 +13,12 @@ DEFAULT_BASE_URL = "http://127.0.0.1:4000/v1"
 # Absolute so the user-scope MCP server finds the config no matter which project
 # directory Claude Code spawned it from (a relative path breaks cross-project use).
 DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parents[1] / "proxy" / "config.yaml")
-CLASSIFIER_ALIAS = "council/groq-llama-70b"  # must be Tier-A; used only if within the allowed set
-# must be Tier-A; used as judge only if within the chosen set
-CHAIR_ALIAS = "council/cerebras-glm-4.7"
+# Optional pins. By default both roles are DERIVED from the member scores so a catalog
+# change never leaves the council pointing at a withdrawn model: the classifier is the
+# strongest "fast" member of the allowed set, the chair the strongest "reasoning" member
+# of the chosen council. A pin is honoured only when it survived the privacy gate.
+CLASSIFIER_ALIAS: str | None = None
+CHAIR_ALIAS: str | None = None
 
 
 class Orchestrator:
@@ -24,8 +27,8 @@ class Orchestrator:
         members: list[Member],
         caller: AsyncCaller,
         *,
-        classifier_alias: str = CLASSIFIER_ALIAS,
-        chair_alias: str = CHAIR_ALIAS,
+        classifier_alias: str | None = CLASSIFIER_ALIAS,
+        chair_alias: str | None = CHAIR_ALIAS,
         store: usage.UsageStore | None = None,
         runlog: runlog_module.RunLog | None = None,
         call_timeout: float = 30.0,
@@ -62,13 +65,14 @@ class Orchestrator:
 
     def _classifier_for(self, allowed: list[Member]) -> str:
         # The classifier receives the prompt, so it must satisfy the privacy gate too:
-        # use the configured classifier only if it survived the tier filter, else the
-        # fastest allowed member.
+        # honour a pinned classifier only if it survived the tier filter, else pick the
+        # strongest "fast" member (ties -> higher rpm) of the allowed set.
         if not allowed:
             raise NoEligibleMember("no members available for the requested sensitivity")
-        if any(m.alias == self._classifier_alias for m in allowed):
-            return self._classifier_alias
-        return max(allowed, key=lambda m: m.rpm).alias
+        pin = self._classifier_alias
+        if pin is not None and any(m.alias == pin for m in allowed):
+            return pin
+        return max(allowed, key=lambda m: (m.scores.get("fast", 0), m.rpm)).alias
 
     async def ask(
         self, prompt: str, *, model: str | None = None, capability: str | None = None,
@@ -198,12 +202,21 @@ class Orchestrator:
         return chosen
 
     def _judge_order(self, chosen: list[Member]) -> list[str]:
-        # Judges come only from the already-tier-filtered chosen members, so the chair
-        # is used only when it survived the gate and is part of this council.
-        ordered = [m.alias for m in sorted(chosen, key=lambda m: m.strength, reverse=True)]
-        if self._chair_alias in ordered:
-            ordered.remove(self._chair_alias)
-            ordered.insert(0, self._chair_alias)
+        # Judges come only from the already-tier-filtered chosen members: strongest
+        # "reasoning" member first (ties -> overall strength, then rpm). A pinned chair
+        # leads only when it survived the gate and is part of this council.
+        ordered = [
+            m.alias
+            for m in sorted(
+                chosen,
+                key=lambda m: (m.scores.get("reasoning", 0), m.strength, m.rpm),
+                reverse=True,
+            )
+        ]
+        pin = self._chair_alias
+        if pin is not None and pin in ordered:
+            ordered.remove(pin)
+            ordered.insert(0, pin)
         return ordered
 
 

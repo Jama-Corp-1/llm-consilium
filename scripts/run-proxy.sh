@@ -10,7 +10,7 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-required=(CEREBRAS_API_KEY GROQ_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_API_BASE LITELLM_MASTER_KEY)
+required=(GROQ_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_API_BASE LITELLM_MASTER_KEY)
 missing=()
 for var in "${required[@]}"; do
   if [[ -z "${!var:-}" ]]; then
@@ -22,7 +22,7 @@ if (( ${#missing[@]} > 0 )); then
   exit 1
 fi
 
-optional=(GITHUB_API_KEY MISTRAL_API_KEY SAMBANOVA_API_KEY NVIDIA_NIM_API_KEY)
+optional=(CEREBRAS_API_KEY MISTRAL_API_KEY NVIDIA_NIM_API_KEY)
 active=(); dormant=()
 for var in "${optional[@]}"; do
   if [[ -n "${!var:-}" ]]; then active+=("$var"); else dormant+=("$var"); fi

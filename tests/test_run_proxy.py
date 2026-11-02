@@ -6,7 +6,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run-proxy.sh"
 ENV_EXAMPLE = ROOT / ".env.example"
 REQUIRED_VARS = {
-    "CEREBRAS_API_KEY",
     "GROQ_API_KEY",
     "CLOUDFLARE_API_TOKEN",
     "CLOUDFLARE_API_BASE",

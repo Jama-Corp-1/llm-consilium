@@ -35,8 +35,8 @@ def test_live_ping_survives_non_httperror():
 def test_run_writes_keys_and_reports_readiness(tmp_path):
     p = tmp_path / ".env"
     # scripted answers: one per env_var across all providers, in order.
-    # cerebras, groq, cloudflare(token, base), github, mistral, sambanova, nvidia
-    answers = iter(["csk-cere", "gsk-groq", "", "", "", "", "", ""])
+    # groq, cloudflare(token, base), cerebras, mistral, sambanova, nvidia
+    answers = iter(["gsk-groq", "", "", "csk-cere", "", "", ""])
     lines: list[str] = []
 
     def prompt(_msg):
