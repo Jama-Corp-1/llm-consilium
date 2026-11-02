@@ -68,6 +68,7 @@ model_list:
       provider_family: qwen
       scores: {reasoning: 4, code: 4, general: 4}
       tpd: 10000
+      timeout: 60  # thinking model; see spec Part D
   - model_name: council/cloudflare-glm-4.7-flash
     litellm_params:
       model: openai/@cf/zai-org/glm-4.7-flash
@@ -80,6 +81,7 @@ model_list:
       # ones -> kept out of reasoning councils; useful as lineage diversity on general.
       scores: {general: 3, code: 3}
       tpd: 10000
+      timeout: 60  # thinking model; see spec Part D
   - model_name: council/cloudflare-llama-70b
     litellm_params:
       model: openai/@cf/meta/llama-3.3-70b-instruct-fp8-fast
@@ -169,14 +171,7 @@ router_settings:
     RateLimitErrorRetries: 0
     AuthenticationErrorRetries: 0
     ContentPolicyViolationErrorRetries: 0
-  # Same-tier, same-capability failover only. NEVER route Tier-A -> Tier-B.
-  fallbacks:
-    - council/groq-gpt-oss-120b: [council/cloudflare-gpt-oss-120b, council/groq-qwen3.8-27b]
-    - council/cloudflare-gpt-oss-120b: [council/groq-gpt-oss-120b]
-    - council/groq-qwen3.8-27b: [council/cloudflare-qwen3.8-27b]
-    - council/cloudflare-qwen3.8-27b: [council/groq-qwen3.8-27b]
-    - council/groq-gpt-oss-20b: [council/cloudflare-llama-4-scout]
-    - council/cloudflare-llama-70b: [council/cloudflare-llama-4-scout, council/groq-gpt-oss-20b]
-    - council/mistral-large-4: [council/mistral-codestral]
+  # No proxy-level fallbacks: the council owns failover (ask walks the ranked list,
+  # council drops a failed voter); a proxy fallback would hide a dead member behind a 200.
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

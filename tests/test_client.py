@@ -5,14 +5,24 @@ import httpx
 import pytest
 
 from council import client
-from council.errors import MemberCallError
+from council.errors import MemberCallError, ProxyError
+from council.types import CallResult
 
 
-def _transport(status, body=None):
+def _transport(status, body=None, headers=None):
     def handler(request):
-        return httpx.Response(status, json=body or {})
+        if isinstance(body, str):
+            return httpx.Response(status, text=body, headers=headers)
+        return httpx.Response(status, json=body or {}, headers=headers)
 
     return httpx.MockTransport(handler)
+
+
+def _ok_body(model=None):
+    body = {"choices": [{"message": {"content": "ok"}}]}
+    if model is not None:
+        body["model"] = model
+    return body
 
 
 def test_complete_returns_answer_on_200():
@@ -20,16 +30,23 @@ def test_complete_returns_answer_on_200():
     out = asyncio.run(
         client.complete("http://x/v1", "k", "council/a", "hi", transport=_transport(200, body))
     )
-    assert out == "hello"
+    assert out.content == "hello"
 
 
-@pytest.mark.parametrize("status,frag", [(401, "401"), (429, "429"), (500, "HTTP 500")])
-def test_complete_maps_errors(status, frag):
+@pytest.mark.parametrize(
+    "status,body,frag",
+    [
+        (401, "GroqException - Invalid API Key", "401"),
+        (429, None, "429"),
+        (500, None, "HTTP 500"),
+    ],
+)
+def test_complete_maps_errors(status, body, frag):
     with pytest.raises(MemberCallError) as ei:
         asyncio.run(
             client.complete(
                 "http://x/v1", "k", "council/a", "hi",
-                transport=_transport(status), max_retries=0,
+                transport=_transport(status, body), max_retries=0,
             )
         )
     assert frag in ei.value.detail
@@ -111,7 +128,7 @@ def test_backoff_retries_5xx_then_succeeds():
             transport=httpx.MockTransport(handler), max_retries=2,
         )
     )
-    assert out == "ok" and calls["n"] == 2
+    assert out.content == "ok" and calls["n"] == 2
 
 
 def test_backoff_retries_429_then_succeeds(monkeypatch):
@@ -130,7 +147,7 @@ def test_backoff_retries_429_then_succeeds(monkeypatch):
             transport=httpx.MockTransport(handler), max_retries=2,
         )
     )
-    assert out == "ok" and calls["n"] == 2
+    assert out.content == "ok" and calls["n"] == 2
 
 
 def test_429_exhausted_raises_after_retries(monkeypatch):
@@ -172,7 +189,7 @@ def test_429_honors_retry_after_header_capped(monkeypatch):
             transport=httpx.MockTransport(handler), max_retries=2,
         )
     )
-    assert out == "ok" and slept == [30.0]  # 120 capped to 30
+    assert out.content == "ok" and slept == [30.0]  # 120 capped to 30
 
 
 def test_empty_200_records_request_with_zero_tokens():
@@ -218,4 +235,139 @@ def test_non_numeric_total_tokens_degrades_to_zero():
             recorder=lambda a, t: seen.append((a, t)),
         )
     )
-    assert out == "ok" and seen == [("council/a", 0)]  # bad token count -> 0, no crash
+    assert out.content == "ok" and seen == [("council/a", 0)]  # bad token count -> 0, no crash
+
+
+def test_classify_error_table():
+    auth_body = '{"error":{"message":"Authentication Error, invalid key"}}'
+    assert client.classify_error(401, auth_body) is None
+    assert client.classify_error(403, '{"error":{"type":"auth_error"}}') is None
+    groq_401 = "GroqException - Invalid API Key"
+    assert client.classify_error(401, groq_401) == ("401 auth failed", True)
+    assert client.classify_error(402, "CerebrasException - Payment required")[1] is True
+    assert client.classify_error(404, "GroqException - model does not exist")[1] is True
+    assert client.classify_error(400, "OpenAIException - Model zai-glm-4.7 is archived")[1] is True
+    assert client.classify_error(400, "OpenAIException - MODEL NOT FOUND")[1] is True
+    # the marker itself is case-sensitive: a lowercase "...exception" is not a provider marker
+    assert client.classify_error(400, "openaiexception - MODEL NOT FOUND")[1] is False
+    assert client.classify_error(400, "OpenAIException - bad request")[1] is False
+    assert client.classify_error(400, "model does not exist")[1] is False  # hint without marker
+    assert client.classify_error(429, "whatever") == ("429 rate-limited", False)
+    assert client.classify_error(503, "x") == ("HTTP 503", False)
+    assert client.classify_error(422, "x") == ("HTTP 422", False)
+
+
+def test_proxy_401_raises_proxy_error():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(
+            401,
+            json={"error": {"message": "Authentication Error, bad key", "type": "auth_error"}},
+        )
+
+    with pytest.raises(ProxyError):
+        asyncio.run(
+            client.complete(
+                "http://x/v1", "k", "council/a", "hi", transport=httpx.MockTransport(handler)
+            )
+        )
+    assert calls["n"] == 1  # no retry
+
+
+def test_provider_404_is_permanent_member_error_without_retry():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(404, text="GroqException - The model `x` does not exist")
+
+    with pytest.raises(MemberCallError) as ei:
+        asyncio.run(
+            client.complete(
+                "http://x/v1", "k", "council/a", "hi",
+                transport=httpx.MockTransport(handler), max_retries=2,
+            )
+        )
+    assert calls["n"] == 1
+    assert ei.value.permanent is True
+    assert ei.value.alias == "council/a"
+
+
+def test_transient_errors_are_not_permanent():
+    with pytest.raises(MemberCallError) as ei:
+        asyncio.run(
+            client.complete(
+                "http://x/v1", "k", "council/a", "hi", transport=_transport(500), max_retries=0
+            )
+        )
+    assert ei.value.permanent is False
+
+
+def test_served_alias_from_resolver_and_recorder_gets_served():
+    seen = []
+    args = []
+
+    def resolve(req, body_model, api_base):
+        args.append((req, body_model, api_base))
+        return "council/served"
+
+    out = asyncio.run(
+        client.complete(
+            "http://x/v1", "k", "council/a", "hi",
+            recorder=lambda a, t: seen.append(a),
+            resolve=resolve,
+            transport=_transport(
+                200,
+                _ok_body("openai/gpt-oss-120b"),
+                headers={
+                    "x-litellm-attempted-fallbacks": "1",
+                    "x-litellm-model-api-base": "https://api.groq.com/openai/v1",
+                },
+            ),
+        )
+    )
+    assert out == CallResult("ok", "council/served", 1)
+    assert seen == ["council/served"]
+    assert args == [("council/a", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1")]
+
+
+def test_default_served_alias_is_requested():
+    out = asyncio.run(
+        client.complete(
+            "http://x/v1", "k", "council/a", "hi", transport=_transport(200, _ok_body())
+        )
+    )
+    assert out == CallResult("ok", "council/a", 0)
+
+
+def test_non_numeric_fallbacks_header_degrades_to_zero():
+    out = asyncio.run(
+        client.complete(
+            "http://x/v1", "k", "council/a", "hi",
+            transport=_transport(200, _ok_body(), headers={"x-litellm-attempted-fallbacks": "x"}),
+        )
+    )
+    assert out.fallbacks == 0
+
+
+def test_make_caller_forwards_resolver():
+    def resolve(req, body_model, api_base):
+        return "council/b"
+
+    caller = client.make_caller("http://x/v1", "k", resolve=resolve)
+    assert caller.keywords["resolve"] is resolve
+
+
+def test_resolver_exception_falls_back_to_requested_alias():
+    def resolve(req, body_model, api_base):
+        raise RuntimeError("boom")
+
+    out = asyncio.run(
+        client.complete(
+            "http://x/v1", "k", "council/a", "hi",
+            transport=_transport(200, _ok_body(model="x")), resolve=resolve,
+        )
+    )
+    assert out == CallResult("ok", "council/a", 0)

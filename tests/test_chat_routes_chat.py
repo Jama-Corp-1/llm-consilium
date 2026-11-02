@@ -197,3 +197,19 @@ def test_stream_non_service_error_emits_error_frame(tmp_path):
     # no assistant row persisted on error
     msgs = c.get(f"/api/threads/{tid}").json()
     assert [m["role"] for m in msgs] == ["user"]
+
+
+def test_proxy_error_mapped_to_200(tmp_path):
+    from council.errors import ProxyError
+
+    class ProxyFail:
+        async def council(self, prompt, **kw):
+            raise ProxyError("proxy rejected the request: HTTP 401")
+
+    c = TestClient(_client(tmp_path, service=ProxyFail()).app, raise_server_exceptions=False)
+    tid = c.post("/api/threads", json={}).json()["id"]
+    r = c.post(f"/api/threads/{tid}/messages",
+               json={"content": "x", "tool": "council", "sensitivity": "sensitive"})
+    assert r.status_code == 200
+    assert r.json() == {"event": "error", "error": "proxy rejected the request: HTTP 401",
+                        "note": ""}

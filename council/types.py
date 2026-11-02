@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 # (alias, prompt) -> answer text
 AsyncCaller = Callable[[str, str], Awaitable[str]]
+# (alias, prompt) -> CallResult (content + which alias actually served it)
+DetailedCaller = Callable[[str, str], Awaitable["CallResult"]]
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,11 @@ class Member:
     rpd: int | None = None
     tpd: int | None = None
     cost_per_1k: float = 0.0
+    model_id: str = ""  # litellm_params.model verbatim
+    vendor: str = ""  # inference vendor: "groq" | "cloudflare" | "mistral" | "nvidia_nim" | ...
+    api_base_ref: str | None = None  # e.g. "os.environ/CLOUDFLARE_API_BASE"
+    required_env: frozenset[str] = frozenset()
+    timeout: float | None = None  # model_info.timeout (seconds)
 
     @property
     def capabilities(self) -> tuple[str, ...]:
@@ -33,6 +40,15 @@ class MemberAnswer:
     ok: bool
     answer: str | None
     detail: str
+    served_by: str | None = None  # alias that actually served, when != alias
+    permanent: bool = False  # failure was permanent (drives health marking)
+
+
+@dataclass(frozen=True)
+class CallResult:
+    content: str
+    served_alias: str
+    fallbacks: int = 0
 
 
 @dataclass(frozen=True)

@@ -21,13 +21,13 @@ from consilium_tg import render
 from consilium_tg.access import AccessStore
 from consilium_tg.config import Settings
 from consilium_tg.store import BotStore
-from council.errors import AllMembersFailed, NoEligibleMember, PrivacyRefusal
+from council.errors import AllMembersFailed, NoEligibleMember, PrivacyRefusal, ProxyError
 from council.types import CouncilResult
 
 if TYPE_CHECKING:
     from consilium_chat.council_service import CouncilService
 
-_SERVICE_ERRORS = (NoEligibleMember, AllMembersFailed, PrivacyRefusal)
+_SERVICE_ERRORS = (NoEligibleMember, AllMembersFailed, PrivacyRefusal, ProxyError)
 _MODES: list[str] = ["", "vote", "judge", "debate", "peer-rank"]
 _SIZES: list[int | None] = [None, 3, 4, 5]
 

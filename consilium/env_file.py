@@ -4,14 +4,18 @@ import os
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from consilium.providers import Provider
 
 DEFAULT_ENV_PATH = Path.home() / ".config" / "consilium" / ".env"
+MASTER_KEY_VAR = "LITELLM_MASTER_KEY"
 
-_TIER_A = (
-    "GROQ_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_BASE", "CEREBRAS_API_KEY",
+_TIER_TITLES = (
+    ("A", "Tier A (safe for any prompt — no-train)"),
+    ("B", "Tier B (public prompts only)"),
 )
-_TIER_B = ("MISTRAL_API_KEY", "SAMBANOVA_API_KEY", "NVIDIA_NIM_API_KEY")
-_KNOWN = set(_TIER_A) | set(_TIER_B) | {"LITELLM_MASTER_KEY"}
 
 
 def load(path: str | Path = DEFAULT_ENV_PATH) -> dict[str, str]:
@@ -26,6 +30,33 @@ def load(path: str | Path = DEFAULT_ENV_PATH) -> dict[str, str]:
         key, _, val = line.partition("=")
         values[key.strip()] = val.strip()
     return values
+
+
+def groups(provs: Iterable[Provider] | None = None) -> list[tuple[str, tuple[str, ...]]]:
+    """Env-file sections derived from the providers (default: proxy/config.yaml).
+
+    Inside a tier: vendor order of first appearance, each vendor's vars as given
+    (registry sorts them). A var shared by two vendors is listed once.
+    """
+    if provs is None:
+        from consilium import providers  # lazy: providers -> paths/registry; avoid a cycle
+
+        provs = providers.providers()
+    prov_list = list(provs)
+    out: list[tuple[str, tuple[str, ...]]] = []
+    for tier, title in _TIER_TITLES:
+        names: list[str] = []
+        for p in prov_list:
+            if p.tier == tier:
+                names.extend(v for v in p.env_vars if v not in names)
+        out.append((title, tuple(names)))
+    out.append(("Proxy auth", (MASTER_KEY_VAR,)))
+    return out
+
+
+def master_key(path: str | Path = DEFAULT_ENV_PATH) -> str | None:
+    """The proxy master key: non-empty process env first, then the env file."""
+    return os.environ.get(MASTER_KEY_VAR) or load(path).get(MASTER_KEY_VAR) or None
 
 
 def _group(
@@ -44,10 +75,16 @@ def write(path: str | Path = DEFAULT_ENV_PATH, values: dict[str, str] | None = N
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     lines = ["# Consilium secrets — managed by `python -m consilium init`. chmod 600.", ""]
-    _group(lines, "Tier A (safe for any prompt — no-train)", _TIER_A, data)
-    _group(lines, "Tier B (public prompts only)", _TIER_B, data)
-    _group(lines, "Proxy auth", ("LITELLM_MASTER_KEY",), data)
-    _group(lines, "Other", [k for k in data if k not in _KNOWN], data)
+    try:
+        sections = groups()
+    except Exception:  # noqa: BLE001 - a broken config must not block saving secrets;
+        # nothing is lost: provider keys simply land in "Other".
+        sections = [("Proxy auth", (MASTER_KEY_VAR,))]
+    known: set[str] = set()
+    for title, keys in sections:
+        _group(lines, title, keys, data)
+        known.update(keys)
+    _group(lines, "Other", [k for k in data if k not in known], data)
     content = "\n".join(lines).rstrip() + "\n"
     # Secure atomic write: mkstemp creates the temp file mode 0o600 on POSIX (owner
     # read/write only) — no world-readable window, so no follow-up chmod is needed.

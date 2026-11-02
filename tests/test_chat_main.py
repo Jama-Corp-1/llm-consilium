@@ -92,3 +92,18 @@ def test_main_skips_open_when_configured(monkeypatch, tmp_path):
     _, opens = _patch_main(m, monkeypatch, loaded={"GROQ_API_KEY": "x"})
     m.main([])
     assert opens == []
+
+
+def test_main_survives_broken_provider_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONSILIUM_CHAT_DB", str(tmp_path / "c.db"))
+    from consilium import providers
+    from consilium_chat import __main__ as m
+
+    def broken():
+        raise ValueError("bad proxy/config.yaml")
+
+    monkeypatch.setattr(providers, "providers", broken)
+    served, opens = _patch_main(m, monkeypatch, loaded={"GROQ_API_KEY": "x"})
+    m.main([])
+    assert served["port"] == 8080
+    assert opens == ["http://127.0.0.1:8080/"]  # no providers -> treated as unconfigured

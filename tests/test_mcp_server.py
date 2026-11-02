@@ -2,28 +2,18 @@ from pathlib import Path
 
 import pytest
 
+from consilium import env_file
 from consilium_mcp import server
 from council.types import AskResult, CouncilResult, MemberAnswer
 
 
-def test_load_master_key_from_env(monkeypatch):
-    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-fromenv")
-    assert server._load_master_key() == "sk-fromenv"
+def test_load_master_key_delegates_to_env_file(monkeypatch):
+    monkeypatch.setattr(env_file, "master_key", lambda: "sk-x")
+    assert server._load_master_key() == "sk-x"
 
 
-def test_load_master_key_from_file(monkeypatch, tmp_path):
-    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
-    home = tmp_path
-    monkeypatch.setattr(server.Path, "home", staticmethod(lambda: home))
-    target = home / ".config" / "consilium" / ".env"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("GROQ_API_KEY=x\nLITELLM_MASTER_KEY=sk-fromfile\n")
-    assert server._load_master_key() == "sk-fromfile"
-
-
-def test_load_master_key_missing_raises(monkeypatch, tmp_path):
-    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
-    monkeypatch.setattr(server.Path, "home", staticmethod(lambda: tmp_path))
+def test_load_master_key_missing_raises(monkeypatch):
+    monkeypatch.setattr(env_file, "master_key", lambda: None)
     with pytest.raises(RuntimeError):
         server._load_master_key()
 
@@ -46,7 +36,7 @@ def test_shape_council():
     out = server._shape_council(r)
     assert out["answer"] == "merged" and out["mode"] == "judge"
     assert out["per_member"][0] == {
-        "alias": "council/x", "ok": True, "detail": "ok", "answer": "hi",
+        "alias": "council/x", "ok": True, "detail": "ok", "answer": "hi", "served_by": None,
     }
 
 
@@ -65,6 +55,9 @@ def test_stats_returns_today_and_total_cost(monkeypatch):
             return [{"alias": "council/x", "requests": 2, "tokens": 10,
                      "exhausted": False, "cost_usd": 0.0}]
 
+        def health_probed_at(self):
+            return None
+
     monkeypatch.setattr(server, "_orch", FakeOrch())
     import asyncio
 
@@ -81,6 +74,9 @@ def test_stats_days_includes_history(monkeypatch):
 
         def usage_history(self, days):
             return [{"day": "2026-07-23", "alias": "council/x", "requests": 1, "tokens": 5}]
+
+        def health_probed_at(self):
+            return None
 
     monkeypatch.setattr(server, "_orch", FakeOrch())
     import asyncio
@@ -154,3 +150,46 @@ def test_council_tool_passes_debate_mode(monkeypatch):
     import asyncio
     out = asyncio.run(server.council("q", mode="debate"))
     assert captured["mode"] == "debate" and out["mode"] == "debate"
+
+
+def test_shape_council_exposes_served_by():
+    r = CouncilResult(
+        answer="m",
+        per_member=[MemberAnswer("council/x", True, "hi", "ok", served_by="council/x2")],
+        disagreements="none", judge_used="council/x", mode="judge",
+    )
+    assert server._shape_council(r)["per_member"][0]["served_by"] == "council/x2"
+
+
+def test_stats_includes_health_probed_at(monkeypatch):
+    class FakeOrch:
+        def usage_summary(self):
+            return [{"alias": "council/x", "requests": 0, "tokens": 0, "cost_usd": 0.0,
+                     "health": "ok", "health_reason": "", "timeout": 30}]
+
+        def health_probed_at(self):
+            return "2026-11-02T10:00:00+00:00"
+
+    monkeypatch.setattr(server, "_orch", FakeOrch())
+    import asyncio
+
+    out = asyncio.run(server.stats())
+    assert out["health_probed_at"] == "2026-11-02T10:00:00+00:00"
+    assert out["today"][0]["health"] == "ok" and out["today"][0]["timeout"] == 30
+
+
+def test_stats_without_health_file(monkeypatch):
+    class FakeOrch:
+        def usage_summary(self):
+            return [{"alias": "council/x", "requests": 0, "tokens": 0, "cost_usd": 0.0,
+                     "health": "unknown", "health_reason": "", "timeout": 30}]
+
+        def health_probed_at(self):
+            return None
+
+    monkeypatch.setattr(server, "_orch", FakeOrch())
+    import asyncio
+
+    out = asyncio.run(server.stats())
+    assert out["health_probed_at"] is None
+    assert out["today"][0]["health"] == "unknown"

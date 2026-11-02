@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -8,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from consilium import env_file  # noqa: E402
 from council import orchestrator as orch  # noqa: E402
 from council.types import AskResult, CouncilResult  # noqa: E402
 
@@ -16,15 +16,10 @@ _orch: orch.Orchestrator | None = None
 
 
 def _load_master_key() -> str:
-    key = os.environ.get("LITELLM_MASTER_KEY")
-    if key:
-        return key
-    env_file = Path.home() / ".config" / "consilium" / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            if line.startswith("LITELLM_MASTER_KEY="):
-                return line.split("=", 1)[1].strip()
-    raise RuntimeError("LITELLM_MASTER_KEY not found in env or ~/.config/consilium/.env")
+    key = env_file.master_key()
+    if key is None:
+        raise RuntimeError("LITELLM_MASTER_KEY not found in env or ~/.config/consilium/.env")
+    return key
 
 
 def _get_orch() -> orch.Orchestrator:
@@ -50,7 +45,10 @@ def _shape_council(r: CouncilResult) -> dict[str, object]:
         "judge_used": r.judge_used,
         "disagreements": r.disagreements,
         "per_member": [
-            {"alias": a.alias, "ok": a.ok, "detail": a.detail, "answer": a.answer}
+            {
+                "alias": a.alias, "ok": a.ok, "detail": a.detail, "answer": a.answer,
+                "served_by": a.served_by,
+            }
             for a in r.per_member
         ],
         "note": r.note,
@@ -107,7 +105,8 @@ async def council(
     Returns: {answer, mode, judge_used, disagreements, per_member, note, confidence}.
         `note` records roster decisions (auto capability/size, dropped members,
         fallbacks). `confidence` (high/medium/low) is the chair's confidence the
-        synthesized answer is correct.
+        synthesized answer is correct. Each `per_member` entry also carries `served_by`:
+        the alias that actually served, when it differs from `alias`; normally null.
     """
     return _shape_council(
         await _get_orch().council(
@@ -122,7 +121,9 @@ async def stats(days: int = 1) -> dict[str, object]:
 
     days: 1 (default) returns today's per-member summary plus a total cost line;
         days > 1 additionally returns a per-day history (newest first).
-    Returns: {today: [per-member rows incl. cost_usd], total_cost_usd, history?}.
+    Returns: {today: [per-member rows incl. cost_usd, health, health_reason, timeout],
+        total_cost_usd, health_probed_at, history?}. `health_probed_at` is the ISO time of
+        the last health probe, or null when no health file exists yet.
     """
     o = _get_orch()
     today_rows = o.usage_summary()
@@ -132,6 +133,7 @@ async def stats(days: int = 1) -> dict[str, object]:
     out: dict[str, object] = {
         "today": today_rows,
         "total_cost_usd": round(total_cost, 6),
+        "health_probed_at": o.health_probed_at(),
     }
     if days > 1:
         out["history"] = o.usage_history(days)

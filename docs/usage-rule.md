@@ -25,6 +25,10 @@ driver** — you (Claude) remain the primary reasoner.
   `mode="debate"` runs a stance-steered debate that converges then synthesizes (most calls).
 - `stats()` — today's per-member usage (requests, tokens) vs daily caps; use to check
   headroom before a heavy `council` call.
+- `stats` rows also carry `health` (up/down/unknown) + `health_reason`; `health_probed_at`
+  is the last probe time — down members are skipped automatically.
+- A council `per_member` entry's `served_by` is the alias that actually served when it
+  differs from `alias`; normally null.
 - **Privacy:** always set `sensitivity`. Default `sensitive` (Tier-A only). Use
   `public` only for generic/published questions. **Never** send secrets/.env/credentials
   to any free tier — the gate refuses obvious secrets, but strip them yourself first.

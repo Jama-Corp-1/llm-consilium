@@ -7,7 +7,7 @@ import webbrowser
 from fastapi import FastAPI
 
 from consilium import env_file
-from consilium_chat.app import create_app, is_configured
+from consilium_chat.app import _load_providers, create_app, is_configured
 from consilium_chat.config import load_settings
 
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
@@ -54,13 +54,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.set_defaults(want="auto")
     args = parser.parse_args(argv)
 
-    configured = is_configured(_load_env())
+    provs = _load_providers()  # guarded: a broken config yields () instead of crashing
+    configured = is_configured(_load_env(), provs)
     url = f"http://{args.host}:{args.port}/"
     hint = "" if configured else "  (open it to add your API keys)"
     print(f"Consilium Chat on {url}{hint}")
     if _should_open(args.want, configured, args.host):
         _open_browser(url)
-    _serve(create_app(), args.host, args.port)
+    _serve(create_app(provs=provs), args.host, args.port)
 
 
 if __name__ == "__main__":

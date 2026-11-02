@@ -23,7 +23,11 @@ curl -s -H "Authorization: Bearer $LITELLM_MASTER_KEY" http://127.0.0.1:4000/v1/
 
 ## 3. Live health-check (in a second shell)
 ```bash
-set -a; source ~/.config/consilium/.env; set +a
-.venv/bin/python scripts/healthcheck.py
+.venv/bin/python -m consilium health          # add --json for the raw health store
 ```
-Prints `[PASS]/[FAIL]` for `/v1/models` and one completion per provider; exits 0 only if all pass. A model-id mismatch shows as a FAIL — fix the id in `proxy/config.yaml`.
+Checks `/v1/models` with the master key, then sends a 1-token completion to every active
+member and prints a table (`up` / `down` / `unknown`). Results are recorded in
+`~/.config/consilium/health.json`, so the council skips members found down. Exit 0 if
+nothing is down, 1 if a member is down (dead key, removed model — fix the id in
+`proxy/config.yaml`), 2 if the proxy is unreachable or rejects the key. Rate limits,
+5xx and timeouts show as `unknown` and never mark a member down.

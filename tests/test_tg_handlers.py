@@ -260,3 +260,21 @@ def test_final_edit_failure_still_persists(tmp_path):
     assert store.recent_messages(sid, 8)[-1]["content"] == "FINAL"
     # a fallback fresh message carried the answer (reply on update.message == outer)
     assert any("FINAL" in r.text for r in outer.replies)
+
+
+def test_ask_proxy_error_is_relayed_not_internal(tmp_path):
+    from council.errors import ProxyError
+
+    store, access, _service, settings = _wire(tmp_path)
+
+    class ProxyFail(FakeService):
+        async def ask(self, prompt, *, model=None, capability=None, sensitivity="sensitive"):
+            raise ProxyError("proxy rejected the request: HTTP 401")
+
+    sid = store.active_session(100)
+    store.set_setting(sid, "tool", "ask")
+    upd, msg = make_update(uid=7, text="question")
+    asyncio.run(handlers.on_text(upd, _ctx(store, access, ProxyFail(), settings)))
+    texts = [r.text for r in msg.replies]
+    assert any("proxy rejected the request: HTTP 401" in t for t in texts)
+    assert not any("internal error" in t for t in texts)

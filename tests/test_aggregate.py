@@ -1,10 +1,11 @@
 import asyncio
 import random
+import time
 
 import pytest
 
 from council import aggregate
-from council.errors import AllMembersFailed, MemberCallError
+from council.errors import AllMembersFailed, MemberCallError, ProxyError
 from council.types import AggregateResult, MemberAnswer
 
 
@@ -401,3 +402,31 @@ def test_peer_rank_timeout_cancels_slow_ranker():
         )
     )
     assert finished == []  # both slow rankers cancelled by the tight timeout before finishing
+
+
+def test_judge_timeout_falls_through_to_next_judge():
+    async def caller(alias, prompt):
+        if alias == "slow-chair":
+            await asyncio.sleep(1.0)
+        return "Fast synthesis.\nDISAGREEMENTS: none\nCONFIDENCE: high"
+
+    ans = _answers(("m1", True, "a long free-form answer"), ("m2", True, "another long answer"))
+    start = time.monotonic()
+    r = asyncio.run(
+        aggregate.aggregate(
+            "q", ans, caller=caller, judge_aliases=["slow-chair", "fast-chair"],
+            rng=random.Random(0), mode="judge", timeout=0.1,
+        )
+    )
+    elapsed = time.monotonic() - start
+    assert r.mode == "judge" and r.judge_used == "fast-chair"
+    assert elapsed < 0.5
+
+
+def test_judge_proxy_error_propagates():
+    async def caller(alias, prompt):
+        raise ProxyError("proxy rejected the request: HTTP 401")
+
+    ans = _answers(("m1", True, "a long free-form answer"), ("m2", True, "another long answer"))
+    with pytest.raises(ProxyError):
+        _run(ans, caller, judges=("chair", "chair2"))

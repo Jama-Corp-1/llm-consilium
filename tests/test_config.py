@@ -78,18 +78,31 @@ def test_openai_shim_aliases_pin_api_base():
             assert params["api_base"].startswith("os.environ/"), m["model_name"]
 
 
-def test_fallbacks_stay_within_tier():
-    cfg = _load()
-    tier = {m["model_name"]: m["model_info"]["privacy_tier"] for m in cfg["model_list"]}
-    for entry in cfg["router_settings"]["fallbacks"]:
-        for src, targets in entry.items():
-            assert src in tier, src
-            for dst in targets:
-                assert dst in tier, dst
-                assert tier[dst] == tier[src], f"{src} -> {dst} crosses tiers"
-
-
 def test_every_member_declares_provider_family():
     cfg = _load()
     for m in cfg["model_list"]:
         assert m["model_info"].get("provider_family"), m["model_name"]
+
+
+def test_every_env_ref_documented_in_env_example():
+    cfg = _load()
+    refs = set()
+    for m in cfg["model_list"]:
+        for v in m["litellm_params"].values():
+            if isinstance(v, str) and v.startswith("os.environ/"):
+                refs.add(v.split("/", 1)[1])
+    example = (CONFIG_PATH.parents[1] / ".env.example").read_text()
+    for name in refs:
+        assert f"{name}=" in example, name   # commented-out lines count
+
+
+def test_no_proxy_level_fallbacks():
+    # The council owns failover (spec decision 1).
+    assert "fallbacks" not in _load()["router_settings"]
+
+
+def test_thinking_members_declare_timeout():
+    by = {m["model_name"]: m for m in _load()["model_list"]}
+    assert by["council/cloudflare-qwen3.8-27b"]["model_info"]["timeout"] == 60
+    assert by["council/cloudflare-glm-4.7-flash"]["model_info"]["timeout"] == 60
+    assert "timeout" not in by["council/groq-gpt-oss-120b"]["model_info"]
