@@ -19,10 +19,10 @@ from fastapi.responses import StreamingResponse
 
 from consilium_chat.config import Settings
 from consilium_chat.store import ChatStore
-from council.errors import AllMembersFailed, NoEligibleMember, PrivacyRefusal
+from council.errors import AllMembersFailed, NoEligibleMember, PrivacyRefusal, ProxyError
 from council.types import CouncilResult
 
-_SERVICE_ERRORS = (NoEligibleMember, AllMembersFailed, PrivacyRefusal)
+_SERVICE_ERRORS = (NoEligibleMember, AllMembersFailed, PrivacyRefusal, ProxyError)
 _DEFAULT_TITLE = "New chat"
 _TITLE_CHARS = 40
 

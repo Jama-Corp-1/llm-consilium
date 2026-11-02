@@ -136,16 +136,21 @@ def _vote(ok: list[str]) -> AggregateResult:
 
 async def _judge(
     prompt: str, ok: list[str], *, caller: AsyncCaller, judge_aliases: list[str],
-    rng: random.Random | None,
+    rng: random.Random | None, timeout: float = 30.0,
 ) -> AggregateResult:
     candidates, _ = anonymize(ok, rng=rng)
     for judge_alias in judge_aliases:
         try:
-            reply = await caller(
-                judge_alias,
-                _JUDGE_PROMPT.format(n=len(ok), prompt=prompt, candidates=candidates),
+            reply = await asyncio.wait_for(
+                caller(
+                    judge_alias,
+                    _JUDGE_PROMPT.format(n=len(ok), prompt=prompt, candidates=candidates),
+                ),
+                timeout,
             )
-        except MemberCallError:
+        except (MemberCallError, asyncio.TimeoutError, TimeoutError):
+            # A failed / slow judge falls through to the next one. ProxyError is not a
+            # MemberCallError subclass, so a proxy rejection propagates to the caller.
             continue
         answer, disagreements, confidence = _parse_judge(reply)
         return AggregateResult(answer, "judge", disagreements, judge_alias, confidence)
@@ -177,7 +182,9 @@ async def _peer_rank(
     rankings = {alias: order for alias, order in results if order}
     if len(rankings) < 2:
         ok = [a.answer for a in ok_members if a.answer is not None]
-        return await _judge(prompt, ok, caller=caller, judge_aliases=judge_aliases, rng=rng)
+        return await _judge(
+            prompt, ok, caller=caller, judge_aliases=judge_aliases, rng=rng, timeout=timeout
+        )
 
     scores: dict[str, float] = {}
     first_votes: dict[str, tuple[int, int]] = {}  # codename -> (firsts, non-self voters)
@@ -216,7 +223,7 @@ async def _debate(
     if len(aliases) < 2:
         return await _judge(
             prompt, list(current.values()), caller=caller,
-            judge_aliases=judge_aliases, rng=rng,
+            judge_aliases=judge_aliases, rng=rng, timeout=timeout,
         )
 
     async def _challenge(index: int, alias: str, block: str) -> tuple[str, str | None]:
@@ -249,7 +256,7 @@ async def _debate(
     confidence = "high" if conv >= 0.7 else "medium" if conv >= 0.4 else "low"
     judged = await _judge(
         prompt, list(current.values()), caller=caller,
-        judge_aliases=judge_aliases, rng=rng,
+        judge_aliases=judge_aliases, rng=rng, timeout=timeout,
     )
     return AggregateResult(
         judged.answer, "debate", judged.disagreements, judged.judge_used, confidence
@@ -273,11 +280,15 @@ async def aggregate(
     if mode is None:
         if _looks_closed_form(ok):
             return _vote(ok)
-        return await _judge(prompt, ok, caller=caller, judge_aliases=judge_aliases, rng=rng)
+        return await _judge(
+            prompt, ok, caller=caller, judge_aliases=judge_aliases, rng=rng, timeout=timeout
+        )
     if mode == "vote":
         return _vote(ok)
     if mode == "judge":
-        return await _judge(prompt, ok, caller=caller, judge_aliases=judge_aliases, rng=rng)
+        return await _judge(
+            prompt, ok, caller=caller, judge_aliases=judge_aliases, rng=rng, timeout=timeout
+        )
     if mode == "peer-rank":
         return await _peer_rank(
             prompt, ok_members, caller=caller, judge_aliases=judge_aliases,

@@ -15,7 +15,10 @@ class AllMembersFailed(ConsiliumError):
 
 
 class ProxyError(ConsiliumError):
-    """The proxy itself rejected/failed the request (auth, unreachable); not a member failure."""
+    """The proxy itself rejected the request (master key / auth failure); not a member failure.
+
+    Transport errors stay transient MemberCallError.
+    """
 
 
 class MemberCallError(ConsiliumError):

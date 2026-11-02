@@ -23,9 +23,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (single source of truth) instead of hand-maintained lists.
 - Chair, classifier and the roster pool are **health-aware**: down members are skipped; a failed
   classifier degrades to `general` instead of failing the call.
-- `ask` enforces a **per-member call timeout** (default 30 s, or the member's `timeout`); previously
-  only the 120 s HTTP ceiling applied.
-- `run-proxy.sh` validates keys via `python -m consilium check-env`.
+- `ask` enforces a **per-member call timeout** (default 30 s, or the member's `timeout`);
+  previously only the 30 s per-attempt HTTP timeout applied.
+- `run-proxy.sh` validates keys via `python -m consilium check-env` (starts iff a Tier-A provider
+  is ready, plus the master key); Cerebras is no longer required.
 - **Model pool refreshed against live catalogs (2026-11-02).** Removed withdrawn members: Cerebras
   (free tier closed, HTTP 402), GitHub Models (service retired 2026-07-30), Groq `llama-3.3-70b-versatile`,
   SambaNova (until a valid key is configured), `mistral-large-latest`. Added Tier-A members on Groq
@@ -36,7 +37,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   through a dead model (previously cost ~12 s of retry/fallback per `ask`). Pins remain optional.
 - `provider_family` now denotes the weights lineage (openai/qwen/meta/...) so auto-composition
   diversifies model families, not just API vendors.
-- `run-proxy.sh` requires only Groq + Cloudflare + master key; Cerebras is optional.
 
 ### Removed
 - Proxy-level `router_settings.fallbacks`: the council owns failover; a proxy fallback hid a dead

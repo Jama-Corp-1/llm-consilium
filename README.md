@@ -67,7 +67,7 @@ CLI reference (`python -m consilium <command>`):
 | `install-service` | systemd `--user` autostart for the proxy + the 30-min health timer (Linux) |
 | `doctor` | keys, proxy, MCP registration, and a live health table |
 | `check-env` | READY/dormant per provider (derived from `proxy/config.yaml`); exit 0 iff a Tier-A provider is ready |
-| `health [--json]` | live-probe every keyed member through the proxy and record it in the health store; exit 1 if a member is down |
+| `health [--json]` | live-probe every keyed member through the proxy and record it in the health store; exit 0 = all probed members up/unknown, 1 = a member is down, 2 = proxy unreachable, master key missing or rejected |
 
 ### Health
 
@@ -77,7 +77,9 @@ auth or billing, 404 or "model gone" — seen on a real call or by `python -m co
 (which sends each member a 1-token probe). A 429, a 5xx or a timeout **never** marks a member
 down; it stays `unknown`/`up`. Down members are skipped when composing a roster (until the mark
 expires or a later success clears it). `install-service` also installs a systemd timer that runs
-the probe 2 min after boot and every 30 min. `stats` shows each member's `health` (+
+the probe 2 min after boot and every 30 min; the `consilium-health.service` oneshot
+intentionally shows as **failed** in `systemctl --user` while a member is down (exit 1), so a
+dead member is visible without opening the health store. `stats` shows each member's `health` (+
 `health_reason`) and the last probe time as `health_probed_at`. Proxy-level
 `router_settings.fallbacks` were removed: the council already owns failover, and a proxy fallback
 hid a dead member behind a successful answer (and misattributed `model_used`).
