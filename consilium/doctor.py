@@ -5,8 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from consilium import env_file, paths
-from consilium.providers import PROVIDERS
+from consilium import env_file, paths, providers
 from consilium.service import port_open as _default_port_open
 
 Runner = Callable[..., "subprocess.CompletedProcess[Any]"]
@@ -18,7 +17,7 @@ def doctor(*, port_open: PortOpen = _default_port_open, runner: Runner = subproc
            env_path: str | Path = env_file.DEFAULT_ENV_PATH, echo: Echo = print) -> int:
     env = env_file.load(env_path)
     echo("Providers:")
-    for provider in PROVIDERS:
+    for provider in providers.providers():
         ready = all(env.get(v) for v in provider.env_vars)
         echo(f"  {'READY  ' if ready else 'dormant'} {provider.name} [Tier {provider.tier}]")
     up = port_open(paths.PROXY_HOST, paths.PROXY_PORT)

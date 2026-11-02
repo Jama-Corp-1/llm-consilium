@@ -9,7 +9,7 @@ a minimal valid payload rather than a 500, so the app always serves ``/`` and
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 import httpx
@@ -28,15 +28,29 @@ from council import orchestrator, registry, usage
 _WEB_DIR = Path(__file__).parent / "web"
 
 
-def is_configured(loaded: Mapping[str, str]) -> bool:
-    """True iff at least one provider has all of its env vars present."""
-    return any(
-        all(loaded.get(v) for v in p.env_vars)
-        for p in providers.PROVIDERS
-    )
+def is_configured(
+    loaded: Mapping[str, str], provs: Iterable[providers.Provider] | None = None
+) -> bool:
+    """True iff at least one provider has all of its env vars present.
+
+    ``provs`` defaults to the config-derived providers (``providers.providers()``).
+    """
+    if provs is None:
+        provs = providers.providers()
+    return any(all(loaded.get(v) for v in p.env_vars) for p in provs)
 
 
-def _make_status_provider() -> Callable[[], dict[str, object]]:
+def _load_providers() -> tuple[providers.Provider, ...]:
+    """Config-derived providers; empty on a broken config so the app still serves."""
+    try:
+        return providers.providers()
+    except Exception:  # noqa: BLE001 - degrade: status shows no providers, never crash
+        return ()
+
+
+def _make_status_provider(
+    provs: tuple[providers.Provider, ...],
+) -> Callable[[], dict[str, object]]:
     """Build the ``/api/status`` payload from live provider / proxy / usage state."""
 
     def status_provider() -> dict[str, object]:
@@ -50,7 +64,7 @@ def _make_status_provider() -> Callable[[], dict[str, object]]:
                     "env_vars": list(p.env_vars),
                     "signup": p.signup,
                 }
-                for p in providers.PROVIDERS
+                for p in provs
             ]
             proxy_up = proxy_service.port_open(paths.PROXY_HOST, paths.PROXY_PORT)
             members = registry.load_members(
@@ -59,7 +73,7 @@ def _make_status_provider() -> Callable[[], dict[str, object]]:
             )
             rows = usage.summary(members, usage.UsageStore().counts())
             return {
-                "configured": is_configured(loaded),
+                "configured": is_configured(loaded, provs),
                 "providers": provider_rows,
                 "proxy_up": proxy_up,
                 "usage": rows,
@@ -84,7 +98,9 @@ def _make_status_provider() -> Callable[[], dict[str, object]]:
     return status_provider
 
 
-def _make_save_keys() -> Callable[[dict[str, str]], dict[str, object]]:
+def _make_save_keys(
+    provs: tuple[providers.Provider, ...],
+) -> Callable[[dict[str, str]], dict[str, object]]:
     """Merge submitted keys into the secure env file; return MASKED values + readiness.
 
     Never returns raw secret values — only ``init.mask(v)``. For each provider whose
@@ -99,7 +115,7 @@ def _make_save_keys() -> Callable[[dict[str, str]], dict[str, object]]:
         readiness: list[dict[str, object]] = []
         client = httpx.Client(timeout=8.0)
         try:
-            for p in providers.PROVIDERS:
+            for p in provs:
                 if all(merged.get(v) for v in p.env_vars):
                     res = init.live_ping(p, merged, client=client)
                     readiness.append(
@@ -182,8 +198,9 @@ def create_app(
     app.state.settings = settings
     app.state.store = store
     app.state.service = service
-    app.state.status_provider = _make_status_provider()
-    app.state.save_keys = _make_save_keys()
+    provs = _load_providers()  # read proxy/config.yaml once per app
+    app.state.status_provider = _make_status_provider(provs)
+    app.state.save_keys = _make_save_keys(provs)
     app.state.proxy_start = _make_proxy_start()
     app.state.proxy_stop = _make_proxy_stop()
     app.state.proxy_restart = _make_proxy_restart()

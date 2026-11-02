@@ -5,7 +5,7 @@ from consilium import doctor, env_file
 
 def test_doctor_reports_keys_proxy_and_mcp(tmp_path):
     envf = tmp_path / ".env"
-    env_file.write(envf, {"CEREBRAS_API_KEY": "csk-x"})  # cerebras ready, others dormant
+    env_file.write(envf, {"GROQ_API_KEY": "gsk-x"})  # groq ready, others dormant
     out = []
 
     def runner(cmd, **kw):
@@ -15,7 +15,7 @@ def test_doctor_reports_keys_proxy_and_mcp(tmp_path):
                        echo=out.append)
     joined = "\n".join(out)
     assert rc == 0
-    assert "Cerebras" in joined and "READY" in joined
+    assert "Groq" in joined and "READY" in joined
     assert "dormant" in joined  # a provider without a key
     assert "up" in joined  # proxy reachable (injected True)
     assert "yes" in joined  # mcp registered (runner output contains "consilium")
