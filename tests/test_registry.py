@@ -243,3 +243,27 @@ def test_probe_alias_tiebreak_rpm_then_alias():
     assert probe == "council/c"
     probe = registry.providers([m("council/b", 30), m("council/a", 30)])[0].probe_alias
     assert probe == "council/a"
+
+
+def test_load_members_reads_reasoning_effort_and_max_tokens(tmp_path):
+    cfg = tmp_path / "r.yaml"
+    cfg.write_text(
+        "model_list:\n  - model_name: council/r\n    litellm_params: {model: groq/x}\n"
+        "    model_info: {privacy_tier: A, scores: {reasoning: 4}, reasoning_effort: true,"
+        " max_tokens: 1024}\n"
+    )
+    m = registry.load_members(cfg)[0]
+    assert m.accepts_reasoning_effort is True and m.max_tokens == 1024
+    # A member that says nothing accepts nothing: support is verified per member, never
+    # inferred from the model id or the vendor.
+    plain = _members()["council/cloudflare-gpt-oss-120b"]
+    assert plain.accepts_reasoning_effort is False and plain.max_tokens is None
+
+
+def test_only_the_probed_groq_members_accept_a_reasoning_effort():
+    flagged = {a for a, m in _members().items() if m.accepts_reasoning_effort}
+    assert flagged == {
+        "council/groq-gpt-oss-120b",
+        "council/groq-gpt-oss-20b",
+        "council/groq-qwen3.8-27b",
+    }

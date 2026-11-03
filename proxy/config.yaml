@@ -7,6 +7,16 @@
 #   provider_family — diversity key for auto-composition: the WEIGHTS family (openai, qwen,
 #                     meta, ...), so a council mixes model lineages, not just API vendors.
 #   rpd / tpd       — daily caps tracked by the usage store (exhausted members are skipped).
+#   reasoning_effort — true when this MEMBER accepts an explicit reasoning_effort parameter.
+#                     A property of the member, never of the weights or the vendor: probed
+#                     2026-11-03, Groq accepts it, while Cloudflare's OpenAI-compat shim and
+#                     Mistral answer HTTP 400 litellm.UnsupportedParamsError for the very same
+#                     gpt-oss-120b weights. Flag only what has been probed. The council sends
+#                     "medium" for reasoning work and "low" otherwise, NEVER "high": high
+#                     spends the whole budget on hidden thinking and returns an empty answer
+#                     below an 8192-token budget (and 16384 trips Groq's per-minute cap).
+#   max_tokens      — per-member completion budget, overriding the council's defaults
+#                     (4096, or 8192 for a member that accepts a reasoning effort).
 #
 # Pool refreshed 2026-11-02 against live catalogs (see docs/superpowers/STATUS.md):
 #   - Cerebras: free tier closed (HTTP 402 on every model) -> members removed. If you have a
@@ -26,6 +36,7 @@ model_list:
       provider_family: openai
       scores: {reasoning: 4, code: 4, general: 4, fast: 4}
       rpd: 1000
+      reasoning_effort: true
   - model_name: council/groq-gpt-oss-20b
     litellm_params:
       model: groq/openai/gpt-oss-20b
@@ -36,6 +47,7 @@ model_list:
       provider_family: openai
       scores: {fast: 5, general: 3, code: 3}
       rpd: 1000
+      reasoning_effort: true
   - model_name: council/groq-qwen3.8-27b
     litellm_params:
       model: groq/qwen/qwen3.8-27b
@@ -46,6 +58,7 @@ model_list:
       provider_family: qwen
       scores: {reasoning: 4, code: 4, general: 4, fast: 4}
       rpd: 1000
+      reasoning_effort: true
   # ---------------- Tier A — Cloudflare Workers AI (OpenAI-compat shim; free plan) -----------
   # Workers AI free plan = 10k neurons/day account-wide; tpd below is a per-alias proxy for it.
   - model_name: council/cloudflare-gpt-oss-120b

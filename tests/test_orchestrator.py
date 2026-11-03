@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+from council import orchestrator as orchestrator_module
+from council import router
 from council.errors import AllMembersFailed, MemberCallError, PrivacyRefusal, ProxyError
 from council.health import HealthStore
 from council.orchestrator import Orchestrator
@@ -29,7 +31,7 @@ class Recorder:
         self.answer = answer
         self.calls = []
 
-    async def __call__(self, alias, prompt):
+    async def __call__(self, alias, prompt, **_params):
         self.calls.append((alias, prompt))
         if "DISAGREEMENTS" in prompt:
             return "Merged.\nDISAGREEMENTS: none"
@@ -75,7 +77,7 @@ def test_council_passes_confidence_through():
     class ConfCaller:
         calls = []
 
-        async def __call__(self, alias, prompt):
+        async def __call__(self, alias, prompt, **_params):
             self.calls.append((alias, prompt))
             if "Classify" in prompt:
                 return "reasoning"
@@ -91,7 +93,7 @@ def test_council_peer_rank_mode_reaches_aggregate():
     class RankCaller:
         calls = []
 
-        async def __call__(self, alias, prompt):
+        async def __call__(self, alias, prompt, **_params):
             self.calls.append((alias, prompt))
             if "Classify" in prompt:
                 return "reasoning"
@@ -141,7 +143,7 @@ def test_council_unknown_alias_dropped_falls_back_to_auto():
 
 def test_ask_auto_falls_back_on_rate_limit():
     class FB:
-        async def __call__(self, alias, prompt):
+        async def __call__(self, alias, prompt, **_params):
             if "Classify" in prompt:
                 return "reasoning"
             if alias == "council/cerebras-glm-4.7":
@@ -155,7 +157,7 @@ def test_ask_auto_falls_back_on_rate_limit():
 
 def test_ask_raises_all_members_failed_when_all_rate_limited():
     class AllFail:
-        async def __call__(self, alias, prompt):
+        async def __call__(self, alias, prompt, **_params):
             if "Classify" in prompt:
                 return "reasoning"
             raise MemberCallError(alias, "429 rate-limited")
@@ -349,7 +351,7 @@ class Detailed:
         self.answer = answer
         self.calls = []
 
-    async def __call__(self, alias, prompt):
+    async def __call__(self, alias, prompt, **_params):
         self.calls.append(alias)
         if "Classify" in prompt:
             return CallResult("reasoning", alias)
@@ -374,7 +376,7 @@ def test_ask_waits_member_timeout():
     slow = Member("council/slow", "A", {"general": 5}, 5, "slowv")  # no own timeout
     patient = Member("council/patient", "A", {"general": 4}, 5, "patientv", timeout=0.5)
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         await asyncio.sleep(0.2)
         return "answer"
 
@@ -574,7 +576,7 @@ def test_classifier_permanent_failure_defaults_to_general(tmp_path):
     gone = MemberCallError(GROQ.alias, "404 model not found", permanent=True)
 
     class ClassifierGone(Detailed):
-        async def __call__(self, alias, prompt):
+        async def __call__(self, alias, prompt, **_params):
             if alias == GROQ.alias and "Classify" in prompt:
                 self.calls.append(alias)
                 raise gone
@@ -600,7 +602,7 @@ def test_classifier_timeout_defaults_to_general():
     slowfast = Member("council/slowfast", "A", {"fast": 5, "general": 1}, 5, "sf")
     gen = Member("council/gen", "A", {"general": 4}, 5, "gv")
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         if alias == slowfast.alias:
             await asyncio.sleep(0.5)
         return "reasoning" if "Classify" in prompt else "answer"
@@ -613,7 +615,7 @@ def test_classifier_timeout_defaults_to_general():
 
 def test_classifier_proxy_error_propagates():
     class ProxyDown(Detailed):
-        async def __call__(self, alias, prompt):
+        async def __call__(self, alias, prompt, **_params):
             raise ProxyError("proxy rejected the request: HTTP 401")
 
     with pytest.raises(ProxyError):
@@ -627,7 +629,7 @@ def test_classifier_failure_keeps_recomputed_pool_note(tmp_path):
     gone = MemberCallError(GROQ.alias, "404 model not found", permanent=True)
 
     class ClassifierGone(Detailed):
-        async def __call__(self, alias, prompt):
+        async def __call__(self, alias, prompt, **_params):
             if "Classify" in prompt:
                 self.calls.append(alias)
                 raise gone
@@ -682,3 +684,102 @@ def test_council_auto_roster_uses_the_local_classifier_without_a_note():
     assert all("Classify" not in p for _, p in rec.calls)
     assert "auto: reasoning" in r.note
     assert "local" not in r.note  # council's notes do not mark the classify path
+
+
+# --- Wave 3: per-member reasoning effort + adaptive token budget ----------------------
+
+EFFORT = Member(
+    "council/groq-effort", "A", {"reasoning": 5, "code": 5, "general": 5, "fast": 5}, 30,
+    "groq", accepts_reasoning_effort=True,
+)
+EFFORT_CAPPED = Member(
+    "council/groq-effort-capped", "A", {"reasoning": 4, "general": 4}, 30, "groq",
+    accepts_reasoning_effort=True, max_tokens=1024,
+)
+PLAIN = Member(
+    "council/cf-plain", "A", {"reasoning": 3, "code": 3, "general": 3, "fast": 3}, 10, "cloudflare"
+)
+
+
+class Params:
+    """DetailedCaller double recording the resolved parameters of every call."""
+
+    def __init__(self, answer="A detailed multi sentence answer explaining the tradeoffs."):
+        self.answer = answer
+        self.calls = []  # (alias, prompt, reasoning_effort, max_tokens)
+
+    async def __call__(self, alias, prompt, *, reasoning_effort=None, max_tokens=None):
+        self.calls.append((alias, prompt, reasoning_effort, max_tokens))
+        if "Classify" in prompt:
+            return CallResult("reasoning", alias)
+        if "DISAGREEMENTS" in prompt:
+            return CallResult("Merged.\nDISAGREEMENTS: none\nCONFIDENCE: high", alias)
+        return CallResult(self.answer, alias)
+
+    def efforts(self, alias=None):
+        return [e for a, _p, e, _m in self.calls if alias in (None, a)]
+
+    def budgets(self, alias=None):
+        return [m for a, _p, _e, m in self.calls if alias in (None, a)]
+
+
+def test_reasoning_route_uses_medium_effort_on_a_capable_member():
+    rec = Params()
+    asyncio.run(Orchestrator([EFFORT], rec).ask("q", capability="reasoning"))
+    assert rec.efforts(EFFORT.alias) == ["medium"]
+
+
+def test_non_reasoning_route_uses_low_effort():
+    rec = Params()
+    asyncio.run(Orchestrator([EFFORT], rec).ask("q", capability="fast"))
+    assert rec.efforts(EFFORT.alias) == ["low"]
+
+
+def test_effort_is_omitted_for_a_member_that_does_not_accept_it():
+    for capability in router.CAPABILITIES:
+        rec = Params()
+        asyncio.run(Orchestrator([PLAIN], rec).ask("q", capability=capability))
+        assert rec.efforts(PLAIN.alias) == [None]
+
+
+def test_high_effort_is_never_sent():
+    for capability in router.CAPABILITIES:
+        rec = Params()
+        o = Orchestrator([EFFORT, EFFORT_CAPPED, PLAIN], rec, local_classify=False)
+        asyncio.run(o.ask("q", capability=capability))
+        asyncio.run(o.ask("explain the tradeoffs in depth please"))  # LLM classify + route
+        asyncio.run(o.council("explain the tradeoffs in depth please"))  # fan-out + chair
+        assert "high" not in rec.efforts()
+
+
+def test_budget_defaults_and_member_override():
+    assert orchestrator_module.DEFAULT_MAX_TOKENS == 4096
+    assert orchestrator_module.REASONING_MAX_TOKENS == 8192
+    rec = Params()
+    asyncio.run(Orchestrator([EFFORT_CAPPED], rec).ask("q", capability="reasoning"))
+    # an explicit per-member budget wins and is NOT raised to REASONING_MAX_TOKENS
+    assert rec.budgets(EFFORT_CAPPED.alias) == [1024]
+    rec = Params()
+    asyncio.run(Orchestrator([EFFORT], rec).ask("q", capability="reasoning"))
+    assert rec.budgets(EFFORT.alias) == [8192]
+    rec = Params()
+    asyncio.run(Orchestrator([PLAIN], rec).ask("q", capability="reasoning"))
+    assert rec.budgets(PLAIN.alias) == [4096]
+
+
+def test_the_llm_classifier_call_uses_low_effort():
+    rec = Params()
+    o = Orchestrator([EFFORT], rec, local_classify=False)
+    # a reasoning prompt, yet the classification call itself is a labelling job
+    asyncio.run(o.ask("prove that every bounded monotone sequence converges, and why"))
+    classify = [(e, m) for _a, p, e, m in rec.calls if "Classify" in p]
+    assert classify == [("low", 8192)]
+
+
+def test_the_judge_call_uses_medium_effort():
+    rec = Params()
+    o = Orchestrator([EFFORT, PLAIN], rec)
+    r = asyncio.run(o.council("explain the tradeoffs in depth please", mode="judge"))
+    assert r.judge_used == EFFORT.alias
+    judge = [(e, m) for _a, p, e, m in rec.calls if "DISAGREEMENTS" in p]
+    assert judge == [("medium", 8192)]

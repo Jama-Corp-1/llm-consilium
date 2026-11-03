@@ -18,6 +18,7 @@ from council.types import (
     DetailedCaller,
     Member,
     MemberAnswer,
+    PlainCaller,
 )
 
 DEFAULT_BASE_URL = "http://127.0.0.1:4000/v1"
@@ -31,13 +32,42 @@ DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parents[1] / "proxy" / "confi
 CLASSIFIER_ALIAS: str | None = None
 CHAIR_ALIAS: str | None = None
 ALL_DOWN_NOTE = "all members marked down; retrying"
+# Completion budgets. max_tokens is a CEILING and the free tiers charge only the tokens
+# actually generated, so unused headroom costs nothing -- while too small a ceiling
+# truncates an answer mid-sentence (observed on cloudflare-nemotron-120b at 2048).
+DEFAULT_MAX_TOKENS = 4096
+# A member that reasons with an explicit effort spends part of its budget on hidden
+# thinking tokens, so it needs a bigger ceiling than a plain completion.
+REASONING_MAX_TOKENS = 8192
+
+
+def _resolve_call_params(member: Member, *, reasoning: bool) -> tuple[str | None, int]:
+    """One member call's (reasoning_effort, max_tokens).
+
+    Effort reaches only a member whose config flags it as accepting the parameter --
+    support is a property of the MEMBER, not of the weights or the vendor (the same
+    gpt-oss-120b accepts the parameter on Groq and answers HTTP 400
+    ``UnsupportedParamsError`` behind Cloudflare's OpenAI shim).
+
+    The effort is never ``"high"``: probed on groq-gpt-oss-120b, ``high`` spends the
+    whole budget on thinking and returns an EMPTY answer below 8192 tokens, while
+    ``medium`` at 4096 returns a complete answer of the same length.
+    """
+    effort = ("medium" if reasoning else "low") if member.accepts_reasoning_effort else None
+    if member.max_tokens is not None:
+        budget = member.max_tokens  # an explicit per-member budget is honoured verbatim
+    elif member.accepts_reasoning_effort:
+        budget = REASONING_MAX_TOKENS
+    else:
+        budget = DEFAULT_MAX_TOKENS
+    return effort, budget
 
 
 class Orchestrator:
     def __init__(
         self,
         members: list[Member],
-        caller: AsyncCaller | DetailedCaller,
+        caller: PlainCaller | DetailedCaller,
         *,
         classifier_alias: str | None = CLASSIFIER_ALIAS,
         chair_alias: str | None = CHAIR_ALIAS,
@@ -48,7 +78,7 @@ class Orchestrator:
         local_classify: bool = True,
     ) -> None:
         self._members = members
-        self._caller = caller  # as given: plain-text (AsyncCaller) or DetailedCaller
+        self._caller = caller  # as given: plain-text (PlainCaller) or DetailedCaller
         self._detailed: DetailedCaller = self._call_detailed
         self._plain: AsyncCaller = self._call_plain  # aggregate consumes plain text
         self._health = health
@@ -83,14 +113,36 @@ class Orchestrator:
 
     # -- caller adaptation ----------------------------------------------
 
-    async def _call_detailed(self, alias: str, prompt: str) -> CallResult:
-        res = await self._caller(alias, prompt)
+    async def _call_detailed(
+        self,
+        alias: str,
+        prompt: str,
+        *,
+        reasoning_effort: str | None = None,
+        max_tokens: int | None = None,
+    ) -> CallResult:
+        res = await self._caller(
+            alias, prompt, reasoning_effort=reasoning_effort, max_tokens=max_tokens
+        )
         if isinstance(res, str):  # plain-text caller: it can only report the requested alias
             return CallResult(res, alias)
         return res
 
-    async def _call_plain(self, alias: str, prompt: str) -> str:
-        return (await self._detailed(alias, prompt)).content
+    async def _call_plain(self, alias: str, prompt: str, *, reasoning: bool = False) -> str:
+        """Plain-text call for the task-aware consumers (router, aggregate).
+
+        They pass intent; the member behind ``alias`` decides the actual parameters. An
+        alias that is not a council member (a test double, a pinned chair that was
+        dropped) falls back to the transport's own defaults.
+        """
+        member = self._by_alias(alias)
+        effort, budget = (
+            _resolve_call_params(member, reasoning=reasoning)
+            if member is not None
+            else (None, None)
+        )
+        res = await self._detailed(alias, prompt, reasoning_effort=effort, max_tokens=budget)
+        return res.content
 
     # -- health / timeouts ----------------------------------------------
 
@@ -135,15 +187,24 @@ class Orchestrator:
         if served in self._health.down_aliases():
             self._health.mark_up(served)
 
-    async def _call_member(self, member: Member, prompt: str) -> CallResult:
+    async def _call_member(
+        self, member: Member, prompt: str, *, reasoning: bool = False
+    ) -> CallResult:
         """One ``ask`` call under the member's own timeout, with health bookkeeping.
+
+        ``reasoning`` states the INTENT of the call (is this reasoning work?); the
+        effort and budget actually sent are resolved per member.
 
         A timeout surfaces as a transient ``MemberCallError("timeout")``; ``ProxyError``
         propagates untouched (no health change).
         """
+        effort, budget = _resolve_call_params(member, reasoning=reasoning)
         try:
             res = await asyncio.wait_for(
-                self._detailed(member.alias, prompt), self._timeout_for(member)
+                self._detailed(
+                    member.alias, prompt, reasoning_effort=effort, max_tokens=budget
+                ),
+                self._timeout_for(member),
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
             raise MemberCallError(member.alias, "timeout") from exc
@@ -197,8 +258,10 @@ class Orchestrator:
         if member is None:  # pragma: no cover - _classifier_for only returns known members
             raise NoEligibleMember(f"classifier {alias} is not a council member")
 
-        async def call(_alias: str, text: str) -> str:
-            return (await self._call_member(member, text)).content
+        async def call(_alias: str, text: str, *, reasoning: bool = False) -> str:
+            # Classification is a one-word labelling job, never reasoning work: it runs
+            # at the lowest effort whatever the prompt it is classifying.
+            return (await self._call_member(member, text, reasoning=False)).content
 
         try:
             return await router.classify(prompt, caller=call, classifier_alias=alias), None, False
@@ -233,7 +296,7 @@ class Orchestrator:
         errors: list[str] = []
         for member in router.rank(pool, capability):
             try:
-                res = await self._call_member(member, prompt)
+                res = await self._call_member(member, prompt, reasoning=capability == "reasoning")
             except MemberCallError as exc:
                 errors.append(f"{member.alias}[{exc.detail}]")
                 continue
@@ -384,7 +447,10 @@ def build(
     members = registry.load_members(config_path, available_keys=registry.available_env_keys())
     store = usage.UsageStore()
     resolve = functools.partial(registry.served_alias, members, env=registry.env_values())
-    caller = client.make_caller(base_url, api_key, recorder=store.record, resolve=resolve)
+    caller = client.make_caller(
+        base_url, api_key, recorder=store.record, resolve=resolve,
+        max_tokens=DEFAULT_MAX_TOKENS,
+    )
     return Orchestrator(
         members, caller, store=store, runlog=runlog_module.RunLog(),
         health=health_module.HealthStore(), local_classify=local_classify,

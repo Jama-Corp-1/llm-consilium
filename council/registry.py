@@ -98,6 +98,7 @@ def load_members(
         family = info.get("provider_family") or vendor
         api_base = params.get("api_base")
         timeout = info.get("timeout")
+        max_tokens = info.get("max_tokens")
         members.append(
             Member(
                 alias=entry["model_name"],
@@ -113,6 +114,8 @@ def load_members(
                 api_base_ref=str(api_base) if api_base is not None else None,
                 required_env=frozenset(_required_env(params)),
                 timeout=float(timeout) if timeout is not None else None,
+                accepts_reasoning_effort=bool(info.get("reasoning_effort", False)),
+                max_tokens=int(max_tokens) if max_tokens is not None else None,
             )
         )
     return members
