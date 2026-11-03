@@ -166,8 +166,9 @@ def test_ask_raises_all_members_failed_when_all_rate_limited():
 
 def test_classifier_never_a_tier_filtered_member():
     tierb_classifier = Member("council/tierb-classifier", "B", {"general": 2}, 99, "tierbc")
+    # local_classify=False: these tests exercise the LLM classifier path on purpose.
     o = Orchestrator([GLM, GROQ, CF, tierb_classifier], Recorder(),
-                     classifier_alias="council/tierb-classifier")
+                     classifier_alias="council/tierb-classifier", local_classify=False)
     asyncio.run(o.ask("a reasoning task"))
     classify_calls = [alias for alias, prompt in o._caller.calls if "Classify" in prompt]
     assert classify_calls
@@ -561,7 +562,7 @@ def test_classifier_skips_down_member(tmp_path):
     health = HealthStore(tmp_path / "h.json")
     health.mark_down(GROQ.alias, "402 x", ttl_s=600)
     det = Detailed()
-    o = Orchestrator(ALL, det, health=health)
+    o = Orchestrator(ALL, det, health=health, local_classify=False)
     r = asyncio.run(o.ask("prove a theorem"))
     assert det.calls[0] == CF.alias  # the classify call
     assert GROQ.alias not in det.calls
@@ -580,14 +581,15 @@ def test_classifier_permanent_failure_defaults_to_general(tmp_path):
             return await super().__call__(alias, prompt)
 
     det = ClassifierGone()
-    o = Orchestrator(ALL, det, health=health)
+    o = Orchestrator(ALL, det, health=health, local_classify=False)
     r = asyncio.run(o.ask("q"))
     assert r.capability == "general" and r.model_used == GLM.alias
     assert "classifier failed (404 model not found); defaulting to general" in r.note
     assert health.status_of(GROQ.alias) == ("down", "404 model not found")
     assert det.calls.count(GROQ.alias) == 1  # not retried in the walk once marked down
     # council: same degradation lands in the notes; the next classify skips GROQ
-    c = asyncio.run(Orchestrator(ALL, ClassifierGone(), health=HealthStore(tmp_path / "h2.json"))
+    c = asyncio.run(Orchestrator(ALL, ClassifierGone(), health=HealthStore(tmp_path / "h2.json"),
+                                 local_classify=False)
                     .council("explain the tradeoffs in depth please"))
     assert "classifier failed (404 model not found); defaulting to general" in c.note
     assert "auto: general" in c.note
@@ -603,7 +605,7 @@ def test_classifier_timeout_defaults_to_general():
             await asyncio.sleep(0.5)
         return "reasoning" if "Classify" in prompt else "answer"
 
-    o = Orchestrator([slowfast, gen], caller, call_timeout=0.05)
+    o = Orchestrator([slowfast, gen], caller, call_timeout=0.05, local_classify=False)
     r = asyncio.run(o.ask("q"))
     assert r.capability == "general" and r.model_used == gen.alias
     assert "classifier failed (timeout); defaulting to general" in r.note
@@ -615,7 +617,7 @@ def test_classifier_proxy_error_propagates():
             raise ProxyError("proxy rejected the request: HTTP 401")
 
     with pytest.raises(ProxyError):
-        asyncio.run(Orchestrator(ALL, ProxyDown()).ask("q"))
+        asyncio.run(Orchestrator(ALL, ProxyDown(), local_classify=False).ask("q"))
 
 
 def test_classifier_failure_keeps_recomputed_pool_note(tmp_path):
@@ -631,7 +633,52 @@ def test_classifier_failure_keeps_recomputed_pool_note(tmp_path):
                 raise gone
             return await super().__call__(alias, prompt)
 
-    c = asyncio.run(Orchestrator([GROQ], ClassifierGone(), health=health)
+    c = asyncio.run(Orchestrator([GROQ], ClassifierGone(), health=health, local_classify=False)
                     .council("explain the tradeoffs in depth please"))
     assert "classifier failed (404 model not found); defaulting to general" in c.note
     assert "all members marked down; retrying" in c.note
+
+
+# --- Wave 3: local heuristic classifier ------------------------------------------------
+
+
+def test_ask_skips_the_llm_classifier_when_the_heuristic_is_confident():
+    # A confident local classification must not call any member for routing.
+    rec = Recorder()
+    r = asyncio.run(_orch(rec).ask("Why does a vendor-diverse council win?"))
+    assert r.capability == "reasoning" and r.model_used == GLM.alias
+    assert len(rec.calls) == 1  # the answer call only
+    assert all("Classify" not in p for _, p in rec.calls)
+    assert r.note.startswith("auto-routed (local): reasoning -> ")
+
+
+def test_ask_falls_back_to_the_llm_classifier_when_unsure():
+    # An ambiguous prompt must still produce the classifier call and today's note text.
+    rec = Recorder()
+    r = asyncio.run(_orch(rec).ask("Tell me about the thing we discussed earlier."))
+    assert [alias for alias, prompt in rec.calls if "Classify" in prompt] == [GROQ.alias]
+    assert r.capability == "reasoning"  # the fake classifier answers "reasoning"
+    assert r.note.startswith("auto-routed: reasoning -> ")
+    assert "(local)" not in r.note
+
+
+def test_local_classify_false_restores_the_llm_classifier_path():
+    rec = Recorder()
+    o = Orchestrator(ALL, rec, local_classify=False)
+    r = asyncio.run(o.ask("Why does a vendor-diverse council win?"))
+    assert [alias for alias, prompt in rec.calls if "Classify" in prompt] == [GROQ.alias]
+    assert r.note.startswith("auto-routed: reasoning -> ")
+
+
+def test_explicit_capability_never_reads_as_locally_routed():
+    rec = Recorder()
+    r = asyncio.run(_orch(rec).ask("Why?", capability="general"))
+    assert r.note.startswith("routed: general -> ")
+
+
+def test_council_auto_roster_uses_the_local_classifier_without_a_note():
+    rec = Recorder()
+    r = asyncio.run(_orch(rec).council("Compare the trade-offs of judge synthesis"))
+    assert all("Classify" not in p for _, p in rec.calls)
+    assert "auto: reasoning" in r.note
+    assert "local" not in r.note  # council's notes do not mark the classify path
