@@ -89,3 +89,26 @@ def test_install_service_non_linux_mentions_health(monkeypatch):
     said = []
     setup.install_service(runner=lambda *a, **k: None, echo=said.append)
     assert any("-m consilium health" in m for m in said)
+
+
+def test_install_service_refuses_when_the_interpreter_has_no_litellm(tmp_path, monkeypatch):
+    """A unit written against an interpreter without litellm looks installed and dies later.
+
+    This is the failure that happened in practice: `python3 -m consilium install-service`
+    with the system python wrote ExecStart=/usr/bin/python3, the proxy kept running on its
+    old process, and the next restart failed with FileNotFoundError on /usr/bin/litellm.
+    """
+    calls: list[list[str]] = []
+    messages: list[str] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(paths, "SYSTEMD_USER_DIR", tmp_path / "units")
+    monkeypatch.setattr(paths, "litellm_exe", lambda: tmp_path / "nowhere" / "litellm")
+
+    rc = setup.install_service(
+        runner=lambda *a, **k: calls.append(list(a[0])), echo=messages.append
+    )
+
+    assert rc == 1
+    assert calls == []  # no systemctl was touched
+    assert not (tmp_path / "units").exists()  # and no unit file was written
+    assert "refusing to install" in messages[0]
