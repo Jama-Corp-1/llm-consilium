@@ -35,7 +35,12 @@ ALL_DOWN_NOTE = "all members marked down; retrying"
 # Completion budgets. max_tokens is a CEILING and the free tiers charge only the tokens
 # actually generated, so unused headroom costs nothing -- while too small a ceiling
 # truncates an answer mid-sentence (observed on cloudflare-nemotron-120b at 2048).
-DEFAULT_MAX_TOKENS = 4096
+#
+# Bound to the transport's own default ON PURPOSE, not duplicated: a member reached
+# WITHOUT a resolved budget (``fanout`` calls the caller with no keywords) falls through
+# to ``client.DEFAULT_MAX_TOKENS``, so two independent literals would let the ``ask``
+# path and the ``council`` fan-out silently drift apart on the same member.
+DEFAULT_MAX_TOKENS = client.DEFAULT_MAX_TOKENS
 # A member that reasons with an explicit effort spends part of its budget on hidden
 # thinking tokens, so it needs a bigger ceiling than a plain completion.
 REASONING_MAX_TOKENS = 8192
@@ -447,10 +452,10 @@ def build(
     members = registry.load_members(config_path, available_keys=registry.available_env_keys())
     store = usage.UsageStore()
     resolve = functools.partial(registry.served_alias, members, env=registry.env_values())
-    caller = client.make_caller(
-        base_url, api_key, recorder=store.record, resolve=resolve,
-        max_tokens=DEFAULT_MAX_TOKENS,
-    )
+    # No max_tokens bind: the orchestrator always forwards an explicit budget (``None``
+    # on the fan-out path), and an explicit keyword beats a partial-bound one -- so a
+    # bind here would be inert. The unresolved case lands on client.DEFAULT_MAX_TOKENS.
+    caller = client.make_caller(base_url, api_key, recorder=store.record, resolve=resolve)
     return Orchestrator(
         members, caller, store=store, runlog=runlog_module.RunLog(),
         health=health_module.HealthStore(), local_classify=local_classify,

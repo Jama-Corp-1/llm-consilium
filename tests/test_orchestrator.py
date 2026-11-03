@@ -3,8 +3,8 @@ import json
 
 import pytest
 
+from council import client, router
 from council import orchestrator as orchestrator_module
-from council import router
 from council.errors import AllMembersFailed, MemberCallError, PrivacyRefusal, ProxyError
 from council.health import HealthStore
 from council.orchestrator import Orchestrator
@@ -783,3 +783,13 @@ def test_the_judge_call_uses_medium_effort():
     assert r.judge_used == EFFORT.alias
     judge = [(e, m) for _a, p, e, m in rec.calls if "DISAGREEMENTS" in p]
     assert judge == [("medium", 8192)]
+
+
+def test_the_pool_wide_budget_is_one_number_not_two():
+    """The ask path and the council fan-out must not drift apart on the same member.
+
+    ``ask`` sends the orchestrator's resolved budget; ``fanout`` sends none and lands on
+    the transport's default. If these two constants ever differ, the same member answers
+    under two different ceilings depending on which tool called it.
+    """
+    assert orchestrator_module.DEFAULT_MAX_TOKENS is client.DEFAULT_MAX_TOKENS
