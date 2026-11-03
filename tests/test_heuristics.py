@@ -166,3 +166,27 @@ def test_pathological_inputs_stay_linear():
         start = time.perf_counter()
         classify_local(prompt)
         assert time.perf_counter() - start < 1.0
+
+
+# --- Fix round 2: the arithmetic signal must not fire on prose -------------------------
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Please make this **bold** text sound nicer.",
+        "Hi **bold**",
+        "Our revenue was 1200000 rubles last quarter, summarise the trend.",
+        "Use the ^ character to anchor the regex, not the $ one.",
+    ],
+)
+def test_markdown_emphasis_and_long_numbers_are_not_reasoning(prompt):
+    capability, confidence = classify_local(prompt)
+    assert capability != "reasoning" or confidence < CONFIDENCE_THRESHOLD
+
+
+@pytest.mark.parametrize("prompt", ["Is 2**82589933-1 prime?", "Simplify x**2 + 2^31"])
+def test_power_between_operands_is_still_reasoning(prompt):
+    capability, confidence = classify_local(prompt)
+    assert capability == "reasoning"
+    assert confidence >= CONFIDENCE_THRESHOLD

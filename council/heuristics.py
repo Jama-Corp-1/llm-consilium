@@ -18,7 +18,7 @@ Rule shape, in precedence order:
    punctuation (:data:`CODE_PUNCTUATION` or an indented line). Prose happily says
    "class-based" and "import strategies"; prose rarely says ``foo(x)``.
 3. **reasoning** 0.8 on an English or Russian reasoning/comparison marker, or on an
-   arithmetic signal (a power operator, a long numeric literal).
+   arithmetic signal (a power operator between operands, an exponent caret).
 4. **reasoning** 0.75 on a long prompt asking several questions.
 5. **fast** 0.8 on a short, mostly-ASCII prompt with no other signal.
 6. **general** 0.3 otherwise -- below the threshold, so the caller defers to the LLM.
@@ -164,8 +164,12 @@ PATH_STEM_MAX = 100
 _PAREN_RE = re.compile(r"\([^()]*\)")
 #: An indented line is code even without any of :data:`CODE_PUNCTUATION`.
 _INDENT_RE = re.compile(r"^(?: {4}|\t)", re.MULTILINE)
-#: A power operator or a long numeric literal: a computation, not a lookup.
-_MATH_RE = re.compile(r"\*\*|\^\d|\b\d{6,}\b")
+#: A power operator *between operands* ("2**82589933", "x**2") or an exponent caret
+#: ("2^31"): a computation, not a lookup. The operands must sit flush against ``**`` so
+#: Markdown emphasis ("**bold**", "Hi **bold**") is not mistaken for arithmetic, and a
+#: bare long number is deliberately no signal at all -- it is as likely an id, a price
+#: or a phone number as a maths problem.
+_MATH_RE = re.compile(r"\w\*\*[\w(]|\^\d")
 _CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
 
 
