@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-consilium"
-version = "0.1.0"
+version = "0.2.0"
 description = "A VM-wide council of free cloud LLMs with privacy-safe routing, for second opinions and cross-checks."
 readme = "README.md"
 requires-python = ">=3.10"

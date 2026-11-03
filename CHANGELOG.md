@@ -6,22 +6,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-- **Members no longer return empty answers on hard prompts.** The flat 2048-token output budget
-  was smaller than some members need for one answer: probed live, `groq-gpt-oss-20b` returned
-  *nothing* (`finish_reason=length`, 2048 completion tokens, zero content) and
-  `groq-gpt-oss-120b` was truncated mid-answer. The budget is now 4096 pool-wide and 8192 for
-  members that accept a reasoning effort. `max_tokens` is a ceiling and free tiers charge tokens
-  actually generated, so unused headroom costs nothing.
-- Council voters are asked for an explicit `low` reasoning effort instead of inheriting the
-  provider default, which was the cause of the truncation above on the fan-out path.
-- `cloudflare-qwen3.8-27b` no longer advertises `reasoning`: it returns an empty answer on a hard
-  prompt at 4096 tokens, cannot be given an effort level (Cloudflare's OpenAI shim rejects the
-  parameter), and did not return at all within 300 s at 16384. It keeps `code` and `general`.
-- A non-boolean `model_info.reasoning_effort` (e.g. the plausible typo `"medium"`) is now a
-  `ValueError` naming the member, instead of silently coercing to `true`.
-- Pin `mcp>=1.0,<2`: the 2.x SDK renamed `FastMCP` to `MCPServer`, which broke CI installs from an
-  unconstrained `mcp>=1.0`; the 2.x migration is a deliberate follow-up, not a pip-drift side effect.
+## [0.2.0] - 2026-11-03
+
+Refreshes the live model pool, makes the roster health-aware and honest about who answered,
+and stops the two things that were quietly costing a call: a classification round-trip on every
+routed `ask`, and a token budget too small for the pool's thinking models to finish an answer.
 
 ### Added
 - **Local prompt classifier** (`council/heuristics.py`): `ask` without an explicit `capability` no
@@ -44,8 +33,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trips Groq's per-minute token limit at 16384).
 - `council/budget.py`: one place that resolves `(reasoning_effort, max_tokens)` for a member, used
   by every call path, with the pool-wide budget as a single constant rather than two that can drift.
-
-### Added
 - **Health store** (`~/.config/consilium/health.json`): permanent provider errors (401/402/403/404,
   model gone) mark a member down; 429/5xx/timeouts never do. New CLI commands
   `python -m consilium health [--json]` (live 1-token probe of every keyed member) and
@@ -83,9 +70,30 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `scripts/healthcheck.py` (superseded by `python -m consilium health` / `check-env`).
 
 ### Fixed
+- **Members no longer return empty answers on hard prompts.** The flat 2048-token output budget was
+  smaller than some members need for one answer: probed live, `groq-gpt-oss-20b` returned *nothing*
+  (`finish_reason=length`, 2048 completion tokens, zero content) and `groq-gpt-oss-120b` was
+  truncated mid-answer. The budget is now 4096 pool-wide and 8192 for members that accept a
+  reasoning effort. `max_tokens` is a ceiling and free tiers charge tokens actually generated, so
+  unused headroom costs nothing.
+- Council voters are asked for an explicit `low` reasoning effort instead of inheriting the provider
+  default, which was the cause of the truncation above on the fan-out path.
+- `cloudflare-qwen3.8-27b` no longer advertises `reasoning`: it returns an empty answer on a hard
+  prompt at 4096 tokens, cannot be given an effort level (Cloudflare's OpenAI shim rejects the
+  parameter), and did not return at all within 300 s at 16384. It keeps `code` and `general`.
+- A non-boolean `model_info.reasoning_effort` (e.g. the plausible typo `"medium"`) is now a
+  `ValueError` naming the member, instead of silently coercing to `true`.
+- `install-service` and `mcp-register` no longer bake the *calling* interpreter into the systemd
+  unit and the MCP registration. Run with a bare system python, `install-service` wrote
+  `ExecStart=/usr/bin/python3`; the running proxy kept serving, so nothing looked wrong until the
+  next restart failed with `FileNotFoundError` on `/usr/bin/litellm`. The project interpreter is
+  now resolved (the caller when litellm sits beside it, else the repo's `.venv`), and
+  `install-service` refuses outright when neither has a litellm entry point.
 - `compose_council` scored a member lacking the requested capability with its best unrelated score,
   letting a `fast` specialist outrank reasoners in a reasoning council; it now scores 0 and the
   diversity pass only considers capable members.
+- Pin `mcp>=1.0,<2`: the 2.x SDK renamed `FastMCP` to `MCPServer`, which broke CI installs from an
+  unconstrained `mcp>=1.0`; the 2.x migration is a deliberate follow-up, not a pip-drift side effect.
 
 ## [0.1.0] - 2026-07-28
 
@@ -100,3 +108,4 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Strict `mypy` type-checking (blocking CI gate).
 
 [0.1.0]: https://github.com/Jama-Corp-1/llm-consilium/releases/tag/v0.1.0
+[0.2.0]: https://github.com/Jama-Corp-1/llm-consilium/releases/tag/v0.2.0
