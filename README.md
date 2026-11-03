@@ -91,6 +91,9 @@ Once registered, Claude Code sees three MCP tools:
 - **`ask(prompt, model?, capability?, sensitivity?)`** — one best-fit free model for a quick
   routed second opinion or a cheap bulk step. Omit `model`/`capability` to auto-route; or pin
   `capability` = `reasoning` | `code` | `fast` | `general`, or `model` to a specific member.
+  Auto-routing is **local-first**: a heuristic classifies the prompt with no network call, and
+  only an ambiguous prompt costs the extra LLM round-trip (see
+  [Routing without a round-trip](#routing-without-a-round-trip)).
 - **`council(prompt, sensitivity?, members?, size?, mode?)`** — fan out to a diverse roster and
   aggregate. Use for high-stakes cross-checks where diverse errors matter (costs more free-tier
   quota than `ask`). `size` overrides the adaptive 3–5 roster; `members` pins an exact roster.
@@ -110,6 +113,86 @@ or `"public"` (adds Tier-B). Use `"public"` only for generic / already-published
 
 **Optional calibration log:** set `CONSILIUM_LOG=1` to append a privacy-safe JSONL record of
 each run to `~/.config/consilium/runs.jsonl` (for tuning routing; off by default).
+
+## Routing without a round-trip
+
+`ask` has to know what kind of task it is holding before it can pick a member. Asking a model
+costs a request and the better part of a second — on a question like *"what is the capital of
+Portugal?"* that is most of the total latency. So a local heuristic (`council/heuristics.py`,
+pure, no dependencies) classifies the prompt first and reports a confidence; at or above `0.7`
+it decides, and below it the LLM classifier runs exactly as before. Measured end to end against
+the live proxy:
+
+| Prompt | local heuristic | LLM classifier |
+|---|---|---|
+| "What is the capital of Portugal?" | **0.45 s** | 0.88 s |
+| "Which HTTP status code means Too Many Requests?" | **0.24 s** | 0.84 s |
+
+Signals, in precedence order: **code** (fenced block, diff header, traceback, source path, or a
+keyword cluster backed by code punctuation) → **reasoning** (explicit markers in English *and
+Russian*, or a maths operator between operands) → **brevity** (a short, unmarked question in a
+script the markers cover) → **`general`** below the threshold.
+
+Two deliberate choices are worth knowing, because both trade a little speed for not being wrong:
+
+- An unrecognised prompt is **not guessed at**. It falls below the threshold and defers, so the
+  heuristic's failure mode is "costs what it used to", never "answered by the wrong member".
+- Soft markers — `better`, `faster`, `should we`, `scales` — report a **sub-threshold**
+  confidence on purpose. *"Which of these two schemas scales better?"* is a reasoning question;
+  *"can you make this sentence better?"* is not, and a single adjective cannot tell them apart.
+  So they hand the decision to the LLM classifier rather than make it.
+
+The `note` field on every result says which path ran: `auto-routed (local): code -> …` versus
+`auto-routed: code -> …`. Pass an explicit `capability` to skip classification altogether.
+
+## Reasoning models, effort and token budgets
+
+Several of the strongest free models *think* before answering, and those thinking tokens come
+out of the same `max_tokens` budget as the answer. Get the budget wrong and the model spends it
+all reasoning, returns `finish_reason=length` with **zero content**, and bills you for the call.
+Probed live on 2026-11-03 with one hard reasoning prompt:
+
+| Member | effort | `max_tokens` | finish | completion tokens | answer |
+|---|---|---|---|---|---|
+| `groq-gpt-oss-120b` | *(none sent)* | 2048 | `length` | 2048 | truncated |
+| `groq-gpt-oss-120b` | `low` | 4096 | `stop` | 2227 | complete |
+| `groq-gpt-oss-120b` | `medium` | 4096 | `stop` | 2980 | complete |
+| `groq-gpt-oss-120b` | `high` | 2048 / 4096 | `length` | — | **empty at both** |
+| `groq-gpt-oss-120b` | `high` | 8192 | `stop` | 7979 | complete |
+| `groq-gpt-oss-120b` | `high` | 16384 | — | — | **HTTP 429** (per-minute token cap) |
+| `groq-gpt-oss-20b` | *(none sent)* | 2048 | `length` | 2048 | **empty** |
+| `groq-gpt-oss-20b` | *(none sent)* | 4096 | `stop` | 1851 | complete |
+| `cloudflare-nemotron-120b` | n/a | 2048 | `length` | — | truncated |
+| `cloudflare-nemotron-120b` | n/a | 4096 | `stop` | — | complete |
+| `cloudflare-glm-4.7-flash` | n/a | 2048 / 4096 / 8192 | `length` | 8192 at the largest | **empty at all three** |
+| `cloudflare-glm-4.7-flash` | n/a | 16384 | `stop` | 8906 | complete |
+| `cloudflare-qwen3.8-27b` | n/a | 4096 | `length` | 4096 | **empty** |
+| `cloudflare-qwen-coder-32b` | n/a | 4096 | `stop` | 618 | complete |
+
+A dash means the run recorded only a total-token count, not a completion-token count.
+
+What that buys, and what the council does with it:
+
+- **`high` effort is never sent.** It costs 2.7× the tokens of `medium` for an answer of the same
+  length, needs 8192 just to return *anything*, and trips a rate limit at the budget where it is
+  comfortable. The council sends `low` by default and `medium` for reasoning routes and the
+  aggregation chair.
+- **`reasoning_effort` support is a property of the member, not the model.** The same
+  `gpt-oss-120b` weights accept it on Groq and reject it with HTTP 400
+  `litellm.UnsupportedParamsError` behind Cloudflare's OpenAI-compatible shim; Mistral rejects it
+  too. So it is opt-in per member via `model_info.reasoning_effort: true` — never inferred from a
+  model id, a vendor or a weights family. Sending it blindly would turn nine working members into
+  failing ones.
+- **The budget is 4096 pool-wide, 8192 for effort-capable members**, overridable per member with
+  `model_info.max_tokens`. `max_tokens` is a ceiling and free tiers charge tokens actually
+  generated, so headroom a model does not use is free.
+- **A thinking model with no effort control and no affordable budget is better off not pretending.**
+  `cloudflare-glm-4.7-flash` needs ~8906 tokens for one hard answer against a 10 000 tokens/day
+  cap — 89% of its day for a single question — so it stays on the pool default and is simply
+  dropped from hard prompts. `cloudflare-qwen3.8-27b` lost its `reasoning` score for the same
+  reason: empty at 4096, and no answer at all within 300 s at 16384.
+
+A dead or truncating member degrades the council (its vote is dropped), it never fails the call.
 
 ## Web UI (Consilium Chat)
 
