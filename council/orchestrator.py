@@ -112,12 +112,12 @@ class Orchestrator:
         dropped) falls back to the transport's own defaults.
         """
         member = self._by_alias(alias)
-        effort, budget = (
+        effort, max_tokens = (
             _resolve_call_params(member, reasoning=reasoning)
             if member is not None
             else (None, None)
         )
-        res = await self._detailed(alias, prompt, reasoning_effort=effort, max_tokens=budget)
+        res = await self._detailed(alias, prompt, reasoning_effort=effort, max_tokens=max_tokens)
         return res.content
 
     # -- health / timeouts ----------------------------------------------
@@ -174,11 +174,12 @@ class Orchestrator:
         A timeout surfaces as a transient ``MemberCallError("timeout")``; ``ProxyError``
         propagates untouched (no health change).
         """
-        effort, budget = _resolve_call_params(member, reasoning=reasoning)
+        # Not named "budget": that would shadow the imported council.budget module.
+        effort, max_tokens = _resolve_call_params(member, reasoning=reasoning)
         try:
             res = await asyncio.wait_for(
                 self._detailed(
-                    member.alias, prompt, reasoning_effort=effort, max_tokens=budget
+                    member.alias, prompt, reasoning_effort=effort, max_tokens=max_tokens
                 ),
                 self._timeout_for(member),
             )
@@ -425,9 +426,10 @@ def build(
     members = registry.load_members(config_path, available_keys=registry.available_env_keys())
     store = usage.UsageStore()
     resolve = functools.partial(registry.served_alias, members, env=registry.env_values())
-    # No max_tokens bind: the orchestrator always forwards an explicit budget (``None``
-    # on the fan-out path), and an explicit keyword beats a partial-bound one -- so a
-    # bind here would be inert. The unresolved case lands on client.DEFAULT_MAX_TOKENS.
+    # No max_tokens bind: every path resolves the budget per member and forwards it
+    # explicitly (the fan-out included, since it asks voters for "low" effort), and an
+    # explicit keyword beats a partial-bound one -- so a bind here would be inert. A
+    # member that pins no budget lands on client.DEFAULT_MAX_TOKENS.
     caller = client.make_caller(base_url, api_key, recorder=store.record, resolve=resolve)
     return Orchestrator(
         members, caller, store=store, runlog=runlog_module.RunLog(),

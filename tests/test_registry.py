@@ -267,3 +267,16 @@ def test_only_the_probed_groq_members_accept_a_reasoning_effort():
         "council/groq-gpt-oss-20b",
         "council/groq-qwen3.8-27b",
     }
+
+
+def test_load_members_rejects_a_non_boolean_reasoning_effort(tmp_path):
+    # "medium" is the wire value, not a capability flag: bool("medium") would be a
+    # silent "yes", so a config typo must fail loudly instead.
+    cfg = tmp_path / "bad.yaml"
+    cfg.write_text(
+        "model_list:\n  - model_name: council/r\n    litellm_params: {model: groq/x}\n"
+        "    model_info: {privacy_tier: A, scores: {reasoning: 4},"
+        " reasoning_effort: medium}\n"
+    )
+    with pytest.raises(ValueError, match="council/r.*reasoning_effort"):
+        registry.load_members(cfg)
