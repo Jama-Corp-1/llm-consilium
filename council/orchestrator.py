@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from council import aggregate as agg
-from council import client, compose, fanout, heuristics, privacy, registry, router, usage
+from council import budget, client, compose, fanout, heuristics, privacy, registry, router, usage
 from council import health as health_module
 from council import runlog as runlog_module
 from council.errors import AllMembersFailed, MemberCallError, NoEligibleMember, PrivacyRefusal
@@ -32,40 +32,11 @@ DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parents[1] / "proxy" / "confi
 CLASSIFIER_ALIAS: str | None = None
 CHAIR_ALIAS: str | None = None
 ALL_DOWN_NOTE = "all members marked down; retrying"
-# Completion budgets. max_tokens is a CEILING and the free tiers charge only the tokens
-# actually generated, so unused headroom costs nothing -- while too small a ceiling
-# truncates an answer mid-sentence (observed on cloudflare-nemotron-120b at 2048).
-#
-# Bound to the transport's own default ON PURPOSE, not duplicated: a member reached
-# WITHOUT a resolved budget (``fanout`` calls the caller with no keywords) falls through
-# to ``client.DEFAULT_MAX_TOKENS``, so two independent literals would let the ``ask``
-# path and the ``council`` fan-out silently drift apart on the same member.
-DEFAULT_MAX_TOKENS = client.DEFAULT_MAX_TOKENS
-# A member that reasons with an explicit effort spends part of its budget on hidden
-# thinking tokens, so it needs a bigger ceiling than a plain completion.
-REASONING_MAX_TOKENS = 8192
-
-
-def _resolve_call_params(member: Member, *, reasoning: bool) -> tuple[str | None, int]:
-    """One member call's (reasoning_effort, max_tokens).
-
-    Effort reaches only a member whose config flags it as accepting the parameter --
-    support is a property of the MEMBER, not of the weights or the vendor (the same
-    gpt-oss-120b accepts the parameter on Groq and answers HTTP 400
-    ``UnsupportedParamsError`` behind Cloudflare's OpenAI shim).
-
-    The effort is never ``"high"``: probed on groq-gpt-oss-120b, ``high`` spends the
-    whole budget on thinking and returns an EMPTY answer below 8192 tokens, while
-    ``medium`` at 4096 returns a complete answer of the same length.
-    """
-    effort = ("medium" if reasoning else "low") if member.accepts_reasoning_effort else None
-    if member.max_tokens is not None:
-        budget = member.max_tokens  # an explicit per-member budget is honoured verbatim
-    elif member.accepts_reasoning_effort:
-        budget = REASONING_MAX_TOKENS
-    else:
-        budget = DEFAULT_MAX_TOKENS
-    return effort, budget
+# Budget / effort policy lives in council.budget so that every path to a member --
+# ask, the classifier, the chair and the council fan-out -- resolves it identically.
+DEFAULT_MAX_TOKENS = budget.DEFAULT_MAX_TOKENS
+REASONING_MAX_TOKENS = budget.REASONING_MAX_TOKENS
+_resolve_call_params = budget.resolve_call_params
 
 
 class Orchestrator:
@@ -364,6 +335,8 @@ class Orchestrator:
         )
         answers = await fanout.fan_out(
             prompt, chosen, self._detailed, timeout=self._call_timeout,
+            # A voter answers the question; the chair does the reasoning over the answers.
+            reasoning=False,
             **({"on_member": on_member} if on_progress is not None else {}),
         )
         for answer in answers:

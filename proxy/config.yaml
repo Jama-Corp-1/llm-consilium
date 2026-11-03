@@ -79,7 +79,12 @@ model_list:
     model_info:
       privacy_tier: A
       provider_family: qwen
-      scores: {reasoning: 4, code: 4, general: 4}
+      # Thinking model, and no effort control: probed 2026-11-03, a hard prompt returns an
+      # EMPTY answer at 4096 (the whole budget goes on thinking), Cloudflare's shim 400s on
+      # reasoning_effort, and raising max_tokens is refused -- 16384 did not return within
+      # 300 s (vs the 60 s timeout) and would eat most of the 10000 tpd cap in one call.
+      # -> kept out of reasoning councils; still useful on code / general.
+      scores: {code: 4, general: 4}
       tpd: 10000
       timeout: 60  # thinking model; see spec Part D
   - model_name: council/cloudflare-glm-4.7-flash

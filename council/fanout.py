@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
+from council import budget
 from council.errors import MemberCallError, ProxyError
 from council.types import DetailedCaller, Member, MemberAnswer
 
@@ -11,11 +12,15 @@ OnMember = Callable[[str, bool], None]
 
 async def _call_one(
     member: Member, prompt: str, caller: DetailedCaller, sem: asyncio.Semaphore,
-    timeout: float, on_member: OnMember | None = None,
+    timeout: float, on_member: OnMember | None = None, reasoning: bool = False,
 ) -> MemberAnswer:
+    effort, max_tokens = budget.resolve_call_params(member, reasoning=reasoning)
     async with sem:
         try:
-            res = await asyncio.wait_for(caller(member.alias, prompt), member.timeout or timeout)
+            res = await asyncio.wait_for(
+                caller(member.alias, prompt, reasoning_effort=effort, max_tokens=max_tokens),
+                member.timeout or timeout,
+            )
         except ProxyError:
             raise  # the proxy itself is broken: abort the council, it is not a member failure
         except MemberCallError as exc:
@@ -40,14 +45,22 @@ async def _call_one(
 
 async def fan_out(
     prompt: str, members: list[Member], caller: DetailedCaller, *, timeout: float = 30.0,
-    on_member: OnMember | None = None,
+    on_member: OnMember | None = None, reasoning: bool = False,
 ) -> list[MemberAnswer]:
+    # `reasoning` is the INTENT of the fan-out: each voter answers the question itself,
+    # which is ordinary work, so the default False asks for the LOW effort on a member
+    # that accepts one. Sending nothing is not the same as sending "low": probed live on
+    # a hard prompt with no effort, groq-gpt-oss-120b truncated at 2048 and
+    # groq-gpt-oss-20b returned an EMPTY answer, while "low" at 4096 completed both.
+    #
     # Every chosen voter is awaited up to its own timeout (member.timeout, else `timeout`);
     # there is no quorum / early exit. Per-member semaphore (sized to rpm) guards against
     # saturating a member when the same member is called concurrently.
     sems = {m.alias: asyncio.Semaphore(max(1, m.rpm)) for m in members}
     tasks = [
-        asyncio.create_task(_call_one(m, prompt, caller, sems[m.alias], timeout, on_member))
+        asyncio.create_task(
+            _call_one(m, prompt, caller, sems[m.alias], timeout, on_member, reasoning)
+        )
         for m in members
     ]
     try:

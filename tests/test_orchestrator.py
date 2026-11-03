@@ -315,8 +315,9 @@ def test_council_passes_call_timeout_to_fanout(monkeypatch):
     from council.types import AggregateResult, MemberAnswer
     captured = {}
 
-    async def fake_fan_out(prompt, members, caller, *, timeout=30.0):
+    async def fake_fan_out(prompt, members, caller, *, timeout=30.0, reasoning=False):
         captured["timeout"] = timeout
+        captured["reasoning"] = reasoning
         return [MemberAnswer(m.alias, True, "answer", "ok") for m in members]
 
     async def fake_aggregate(prompt, answers, *, caller, judge_aliases, rng=None,
@@ -328,6 +329,8 @@ def test_council_passes_call_timeout_to_fanout(monkeypatch):
     o = Orchestrator(ALL, Recorder(), call_timeout=9.0)
     asyncio.run(o.council("explain the tradeoffs in depth please"))
     assert captured["timeout"] == 9.0
+    # voters answer the question; only the chair reasons over the answers
+    assert captured["reasoning"] is False
 
 
 def test_council_emits_progress_events():
