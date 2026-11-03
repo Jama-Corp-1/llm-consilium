@@ -9,6 +9,25 @@ numbers are tuning knobs, never calibrated likelihoods.
 The module makes no network call and touches no member, so it can never affect the
 privacy gate or the health store. It imports nothing beyond the standard library and
 ``council.router.CAPABILITIES``.
+
+Rule shape, in precedence order:
+
+1. **code** 0.9 on a *structural* marker: a fence, a unified-diff header, a traceback
+   header, or a source-file path.
+2. **code** 0.8 on a cluster of language keywords -- but only together with code-shaped
+   punctuation (:data:`CODE_PUNCTUATION` or an indented line). Prose happily says
+   "class-based" and "import strategies"; prose rarely says ``foo(x)``.
+3. **reasoning** 0.8 on an English or Russian reasoning/comparison marker, or on an
+   arithmetic signal (a power operator, a long numeric literal).
+4. **reasoning** 0.75 on a long prompt asking several questions.
+5. **fast** 0.8 on a short, mostly-ASCII prompt with no other signal.
+6. **general** 0.3 otherwise -- below the threshold, so the caller defers to the LLM.
+
+The marker sets cover English and Russian (this council's two traffic languages).
+Anything matching neither language's markers falls through to the low-confidence
+default and is classified by the LLM, never guessed at. Misrouting a hard prompt to a
+weak member is the failure mode this module must avoid, so every tie leans towards
+``reasoning``/``code`` or towards deferring, never towards ``fast``.
 """
 
 from __future__ import annotations
@@ -39,12 +58,14 @@ FAST_MAX_WORDS = 4
 #: A prompt longer than this with several questions reads as a reasoning ask.
 LONG_PROMPT_CHARS = 1200
 LONG_PROMPT_MIN_QUESTIONS = 2
-#: Share of non-ASCII characters above which the brevity rule is not trusted:
-#: the marker sets are English-only, so a short non-English prompt is not "fast",
-#: it is simply unclassified and belongs to the LLM.
+#: Share of non-ASCII characters above which the brevity rule is not trusted: a short
+#: prompt in a language whose markers this module does not carry is not "fast", it is
+#: simply unclassified and belongs to the LLM.
 NON_ASCII_RATIO = 0.1
 #: Two or more of these in one prompt read as source code rather than prose.
 CODE_KEYWORD_CLUSTER = 2
+#: Letters of Russian inflection a reasoning marker may grow ("сравни" -> "сравните").
+RU_INFLECTION_TAIL = 3
 
 #: Every verdict this module can return; kept in step with the router's capabilities.
 VERDICTS = ("code", "reasoning", "fast", "general")
@@ -68,6 +89,9 @@ CODE_KEYWORDS = frozenset(
     }
 )
 
+#: Prose that asks for an explanation, a judgement or a comparison. The comparison half
+#: matters most: "which of these two scales better?" is short, so without these markers
+#: the brevity rule would hand a genuinely hard question to a weak "fast" member.
 REASONING_MARKERS = (
     "why",
     "prove",
@@ -80,7 +104,38 @@ REASONING_MARKERS = (
     "root cause",
     "explain how",
     "pros and cons",
+    "better",
+    "worse",
+    "which of",
+    "versus",
+    " vs ",
+    "faster",
+    "scales",
+    "should we",
 )
+
+#: The same asks in Russian, this council's other traffic language. Matched
+#: case-insensitively (``re`` uses Unicode semantics for ``str`` patterns, so ``\b`` and
+#: ``\w`` cover Cyrillic) with a short inflection tail.
+REASONING_MARKERS_RU = (
+    "почему",
+    "зачем",
+    "сравни",
+    "объясни",
+    "обоснуй",
+    "архитектура",
+    "спроектируй",
+    "по шагам",
+    "причина",
+    "лучше ли",
+    "стоит ли",
+)
+
+#: Punctuation that prose almost never produces but code almost always does. Required
+#: alongside the keyword cluster so "class-based versus functional import strategies"
+#: stays prose. A parenthesised expression (the call shape ``()``/``(x)``) and an
+#: indented line count too -- see ``_PAREN_RE`` and ``_INDENT_RE``.
+CODE_PUNCTUATION = ("{", "};", "=", "::", "->")
 
 SOURCE_EXTENSIONS = (
     "py", "pyi", "ipynb", "js", "mjs", "cjs", "ts", "tsx", "jsx", "go", "rs", "java",
@@ -97,26 +152,73 @@ _TRACEBACK_RE = re.compile(
     r"|panic: ",
     re.MULTILINE,
 )
-_PATH_RE = re.compile(
-    r"[\w./\\-]*\w\.(?:" + "|".join(SOURCE_EXTENSIONS) + r")\b", re.IGNORECASE
-)
+#: A source extension at a word boundary. The *stem* before it is walked in Python
+#: rather than matched by a starred character class: a greedy class in front of the
+#: extension backtracks quadratically on a long path-like blob (a pasted traceback).
+_EXT_RE = re.compile(r"\.(?:" + "|".join(SOURCE_EXTENSIONS) + r")\b", re.IGNORECASE)
+#: Characters that may precede the dot of a path, besides letters and digits.
+PATH_STEM_CHARS = "_./\\-"
+#: How far back a path stem is read. A longer run is still a path, just not a new one.
+PATH_STEM_MAX = 100
+#: A parenthesised expression: "()" as well as "cleanup(x)".
+_PAREN_RE = re.compile(r"\([^()]*\)")
+#: An indented line is code even without any of :data:`CODE_PUNCTUATION`.
+_INDENT_RE = re.compile(r"^(?: {4}|\t)", re.MULTILINE)
+#: A power operator or a long numeric literal: a computation, not a lookup.
+_MATH_RE = re.compile(r"\*\*|\^\d|\b\d{6,}\b")
+_CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
 
 
-def _keyword_re(keyword: str, *, plural: bool = False) -> re.Pattern[str]:
-    """Word-boundary match for alphanumeric keywords, literal match otherwise.
-
-    ``plural`` also accepts a trailing "s"/"es" so "trade-offs" matches "trade-off".
-    """
+def _keyword_re(keyword: str) -> re.Pattern[str]:
+    """Strict word-boundary match for alphanumeric keywords, literal match otherwise."""
     escaped = re.escape(keyword)
     if keyword[:1].isalnum():
         escaped = r"\b" + escaped
     if keyword[-1:].isalnum():
-        escaped = escaped + (r"(?:es|s)?\b" if plural else r"\b")
+        escaped = escaped + r"\b"
+    return re.compile(escaped, re.IGNORECASE)
+
+
+def _marker_re(marker: str) -> re.Pattern[str]:
+    """Reasoning marker: leading word boundary, inflection-tolerant tail.
+
+    English markers also accept a plural "s"/"es" ("trade-offs"); Russian markers accept
+    up to :data:`RU_INFLECTION_TAIL` extra Cyrillic letters ("сравни" -> "сравните").
+    """
+    escaped = re.escape(marker)
+    if marker[:1].isalnum():
+        escaped = r"\b" + escaped
+    if marker[-1:].isalnum():
+        escaped += (
+            rf"[а-яё]{{0,{RU_INFLECTION_TAIL}}}(?!\w)"
+            if _CYRILLIC_RE.search(marker)
+            else r"(?:es|s)?\b"
+        )
     return re.compile(escaped, re.IGNORECASE)
 
 
 _CODE_KEYWORD_RES = tuple(_keyword_re(k) for k in sorted(CODE_KEYWORDS))
-_REASONING_RES = tuple(_keyword_re(m, plural=True) for m in REASONING_MARKERS)
+_REASONING_RES = tuple(_marker_re(m) for m in (*REASONING_MARKERS, *REASONING_MARKERS_RU))
+
+
+def _is_path_char(ch: str) -> bool:
+    return ch.isalnum() or ch in PATH_STEM_CHARS
+
+
+def _has_source_path(prompt: str) -> bool:
+    """A path with a source extension, e.g. ``council/compose.py``.
+
+    The stem must hold an ASCII letter, so a numbered label such as "rule 1.c" is not
+    read as a C source file.
+    """
+    for match in _EXT_RE.finditer(prompt):
+        stem = prompt[max(0, match.start() - PATH_STEM_MAX) : match.start()]
+        cut = len(stem)
+        while cut > 0 and _is_path_char(stem[cut - 1]):
+            cut -= 1
+        if any(ch.isascii() and ch.isalpha() for ch in stem[cut:]):
+            return True
+    return False
 
 
 def _has_structural_code(prompt: str) -> bool:
@@ -124,7 +226,7 @@ def _has_structural_code(prompt: str) -> bool:
         _FENCE_RE.search(prompt)
         or _DIFF_RE.search(prompt)
         or _TRACEBACK_RE.search(prompt)
-        or _PATH_RE.search(prompt)
+        or _has_source_path(prompt)
     )
 
 
@@ -132,8 +234,20 @@ def _code_keyword_hits(prompt: str) -> int:
     return sum(1 for pattern in _CODE_KEYWORD_RES if pattern.search(prompt))
 
 
+def _has_code_punctuation(prompt: str) -> bool:
+    return (
+        any(token in prompt for token in CODE_PUNCTUATION)
+        or bool(_PAREN_RE.search(prompt))
+        or bool(_INDENT_RE.search(prompt))
+    )
+
+
 def _has_reasoning_marker(prompt: str) -> bool:
     return any(pattern.search(prompt) for pattern in _REASONING_RES)
+
+
+def _has_math_signal(prompt: str) -> bool:
+    return bool(_MATH_RE.search(prompt))
 
 
 def _mostly_ascii(prompt: str) -> bool:
@@ -147,15 +261,16 @@ def classify_local(prompt: str) -> tuple[str, float]:
     """Guess the capability a prompt needs -> ``(capability, confidence)``.
 
     The capability is always one of :data:`council.router.CAPABILITIES`. Signals are
-    evaluated in a fixed precedence (code, reasoning, brevity) so the verdict is
-    deterministic; nothing matching yields ``("general", UNSURE_CONFIDENCE)``, which is
-    below the threshold and tells the caller to ask the LLM classifier instead.
+    evaluated in the fixed precedence documented in the module docstring (code,
+    reasoning, brevity) so the verdict is deterministic; nothing matching yields
+    ``("general", UNSURE_CONFIDENCE)``, which is below the threshold and tells the
+    caller to ask the LLM classifier instead.
     """
     if _has_structural_code(prompt):
         return "code", CODE_STRUCTURAL_CONFIDENCE
-    if _code_keyword_hits(prompt) >= CODE_KEYWORD_CLUSTER:
+    if _code_keyword_hits(prompt) >= CODE_KEYWORD_CLUSTER and _has_code_punctuation(prompt):
         return "code", CODE_KEYWORD_CONFIDENCE
-    if _has_reasoning_marker(prompt):
+    if _has_reasoning_marker(prompt) or _has_math_signal(prompt):
         return "reasoning", REASONING_MARKER_CONFIDENCE
     if len(prompt) > LONG_PROMPT_CHARS and prompt.count("?") >= LONG_PROMPT_MIN_QUESTIONS:
         return "reasoning", REASONING_LONG_CONFIDENCE

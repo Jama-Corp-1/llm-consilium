@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from council.heuristics import CONFIDENCE_THRESHOLD, classify_local
@@ -36,12 +38,44 @@ def test_short_reasoning_keyword_is_not_fast():
     assert confidence >= CONFIDENCE_THRESHOLD
 
 
-def test_russian_prompt_defers_to_the_llm():
-    # Review Focus 4: non-English prompts are not guessed at.
+def test_russian_reasoning_prompt_is_classified_locally():
+    # Review Focus 4 (amended): Russian is a first-class traffic language here.
     capability, confidence = classify_local(
         "Объясни, как устроена маршрутизация запросов в этом проекте и почему именно так."
     )
+    assert capability == "reasoning"
+    assert confidence >= CONFIDENCE_THRESHOLD
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Почему совет из разных моделей лучше одной сильной модели?",
+        "Сравните judge-синтез и голосование большинством.",
+        "Стоит ли выносить классификатор в локальный код?",
+        "Обоснуйте выбор архитектуры этого прокси.",
+    ],
+)
+def test_russian_markers_match_with_inflection(prompt):
+    capability, confidence = classify_local(prompt)
+    assert capability == "reasoning"
+    assert confidence >= CONFIDENCE_THRESHOLD
+
+
+def test_russian_prose_without_a_marker_defers_to_the_llm():
+    capability, confidence = classify_local(
+        "Напиши письмо коллеге о переносе встречи на вторник."
+    )
+    assert capability == "general"
     assert confidence < CONFIDENCE_THRESHOLD
+
+
+def test_russian_prompt_with_a_code_block_is_code():
+    capability, confidence = classify_local(
+        "Почему это медленно?\n```python\ndef f(x):\n    return x + 1\n```"
+    )
+    assert capability == "code"
+    assert confidence >= CONFIDENCE_THRESHOLD
 
 
 def test_unmatched_prompt_defers_to_the_llm():
@@ -56,9 +90,7 @@ def test_classify_local_never_returns_an_unknown_capability():
 
 
 def test_keyword_cluster_is_code_at_the_lower_confidence():
-    capability, confidence = classify_local(
-        "In this module I import the helper and then return early from the loop body."
-    )
+    capability, confidence = classify_local("import os and return cleanup(x) when the loop ends")
     assert capability == "code"
     assert confidence == pytest.approx(0.8)
 
@@ -76,3 +108,61 @@ def test_long_multi_question_prompt_is_reasoning():
 
 def test_blank_prompt_is_not_fast():
     assert classify_local("   \n ") == ("general", pytest.approx(0.3))
+
+
+# --- Fix round 1: misroutes found in review -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Which of these two schemas scales better under 10k writes/s?",
+        "Is 2**82589933-1 prime?",
+    ],
+)
+def test_short_but_hard_questions_are_not_fast(prompt):
+    # The brevity rule must not swallow a comparison or a computation.
+    capability, confidence = classify_local(prompt)
+    assert capability == "reasoning"
+    assert confidence >= CONFIDENCE_THRESHOLD
+
+
+def test_prose_keyword_cluster_without_code_punctuation_is_not_code():
+    capability, _ = classify_local(
+        "Compare the design trade-offs of class-based versus functional import strategies"
+    )
+    assert capability == "reasoning"
+
+
+def test_prose_question_with_two_code_keywords_is_not_code():
+    assert classify_local(
+        "Should we return an error or retry when the const pool is empty?"
+    )[0] != "code"
+
+
+def test_numbered_label_is_not_a_source_path():
+    assert classify_local("See rule 1.c of the contract and tell me if we are liable.")[0] != "code"
+
+
+def test_real_paths_still_read_as_code():
+    for prompt in (
+        "Refactor council/compose.py to drop the diversity pass",
+        "What changed in test2.py?",
+        "Look at src/main.rs",
+    ):
+        assert classify_local(prompt) == ("code", pytest.approx(0.9))
+
+
+def test_indented_block_counts_as_code_punctuation():
+    capability, confidence = classify_local("my module:\n    import os\n    return 1\n")
+    assert capability == "code"
+    assert confidence == pytest.approx(0.8)
+
+
+def test_pathological_inputs_stay_linear():
+    # A greedy class in front of the path extension used to backtrack quadratically;
+    # a pasted traceback or a wall of punctuation must not stall the hot path.
+    for prompt in ("x" * 50_000, "a/b/c." * 5_000, "(" * 20_000, "src/mod_x.py " * 2_000):
+        start = time.perf_counter()
+        classify_local(prompt)
+        assert time.perf_counter() - start < 1.0
