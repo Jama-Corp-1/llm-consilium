@@ -85,7 +85,18 @@ def install_service(*, runner: Runner = subprocess.run, echo: Echo = print) -> i
             f"`{paths.venv_python()} -m consilium health` on a schedule (e.g. every 30 min)."
         )
         return 0
-    python, repo_root = str(paths.venv_python()), str(paths.REPO_ROOT)
+    interpreter = paths.venv_python()
+    if not paths.litellm_exe().exists():
+        # Writing the unit anyway would "succeed" here and fail on the next restart with
+        # FileNotFoundError on the litellm entry point -- after the old, working process
+        # has already been replaced. Refuse instead.
+        echo(
+            f"refusing to install: no litellm entry point beside {interpreter}. "
+            f"Install the project's dependencies, then re-run with that environment's "
+            f"interpreter (e.g. {paths.repo_venv_python()} -m consilium install-service)."
+        )
+        return 1
+    python, repo_root = str(interpreter), str(paths.REPO_ROOT)
     unit_dir = paths.SYSTEMD_USER_DIR
     unit_dir.mkdir(parents=True, exist_ok=True)
     unit_path = unit_dir / "consilium-proxy.service"
