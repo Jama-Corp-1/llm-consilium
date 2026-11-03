@@ -190,3 +190,54 @@ def test_power_between_operands_is_still_reasoning(prompt):
     capability, confidence = classify_local(prompt)
     assert capability == "reasoning"
     assert confidence >= CONFIDENCE_THRESHOLD
+
+
+# --- Fix round 3: soft markers defer, Russian lookups route locally --------------------
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "What should we have for dinner tonight, something quick?",
+        "Can you make this sentence better: the meeting was moved.",
+        "How do I make this page load faster?",
+        "Make the font scales consistent across breakpoints",
+    ],
+)
+def test_soft_markers_defer_instead_of_deciding(prompt):
+    # A bare "should we"/"better"/"faster"/"scales" is a weak signal: report it, but let
+    # the LLM classifier decide rather than paying reasoning effort for a trivial ask.
+    capability, confidence = classify_local(prompt)
+    assert confidence < CONFIDENCE_THRESHOLD
+    assert capability == "reasoning"
+    assert confidence == pytest.approx(0.6)
+
+
+def test_strong_markers_still_decide_confidently():
+    assert classify_local("Which of these two schemas scales better under 10k writes/s?") == (
+        "reasoning",
+        pytest.approx(0.8),
+    )
+    assert classify_local("Is 2**82589933-1 prime?") == ("reasoning", pytest.approx(0.8))
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Что такое LiteLLM?",
+        "какой командой посмотреть логи systemd?",
+        "Как лучше назвать эту функцию?",
+    ],
+)
+def test_short_russian_questions_are_fast(prompt):
+    capability, confidence = classify_local(prompt)
+    assert capability == "fast"
+    assert confidence >= CONFIDENCE_THRESHOLD
+
+
+@pytest.mark.parametrize("prompt", ["什么是 LiteLLM？", "ما هو LiteLLM؟", "LiteLLM מה זה"])
+def test_uncovered_scripts_still_defer(prompt):
+    # We carry no markers for these scripts, so brevity alone must not mean "fast".
+    capability, confidence = classify_local(prompt)
+    assert capability == "general"
+    assert confidence < CONFIDENCE_THRESHOLD

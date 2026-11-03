@@ -17,17 +17,21 @@ Rule shape, in precedence order:
 2. **code** 0.8 on a cluster of language keywords -- but only together with code-shaped
    punctuation (:data:`CODE_PUNCTUATION` or an indented line). Prose happily says
    "class-based" and "import strategies"; prose rarely says ``foo(x)``.
-3. **reasoning** 0.8 on an English or Russian reasoning/comparison marker, or on an
+3. **reasoning** 0.8 on a *strong* English or Russian reasoning marker, or on an
    arithmetic signal (a power operator between operands, an exponent caret).
 4. **reasoning** 0.75 on a long prompt asking several questions.
-5. **fast** 0.8 on a short, mostly-ASCII prompt with no other signal.
-6. **general** 0.3 otherwise -- below the threshold, so the caller defers to the LLM.
+5. **reasoning** 0.6 -- *below* the threshold, so the caller defers -- on a *soft*
+   marker. "Should we…" and "…better" do mark comparisons, but they equally open
+   "what should we have for dinner?"; the signal is real but too weak to route on.
+6. **fast** 0.8 on a short prompt in a covered script with no other signal.
+7. **general** 0.3 otherwise -- below the threshold, so the caller defers to the LLM.
 
-The marker sets cover English and Russian (this council's two traffic languages).
-Anything matching neither language's markers falls through to the low-confidence
-default and is classified by the LLM, never guessed at. Misrouting a hard prompt to a
-weak member is the failure mode this module must avoid, so every tie leans towards
-``reasoning``/``code`` or towards deferring, never towards ``fast``.
+The marker sets cover English and Russian, this council's two traffic languages; the
+brevity rule applies to both (Latin and Cyrillic), and only to those. A prompt in a
+script we carry no markers for falls through to the low-confidence default and is
+classified by the LLM, never guessed at. Misrouting a hard prompt to a weak member is
+the failure mode this module must avoid, so every tie leans towards ``reasoning``/
+``code`` or towards deferring, never towards ``fast``.
 """
 
 from __future__ import annotations
@@ -45,6 +49,9 @@ CODE_STRUCTURAL_CONFIDENCE = 0.9
 CODE_KEYWORD_CONFIDENCE = 0.8
 REASONING_MARKER_CONFIDENCE = 0.8
 REASONING_LONG_CONFIDENCE = 0.75
+#: Deliberately below :data:`CONFIDENCE_THRESHOLD`: a soft marker reports the signal
+#: without deciding, so the caller still asks the LLM classifier.
+REASONING_SOFT_CONFIDENCE = 0.6
 FAST_CONFIDENCE = 0.8
 UNSURE_CONFIDENCE = 0.3
 
@@ -58,10 +65,11 @@ FAST_MAX_WORDS = 4
 #: A prompt longer than this with several questions reads as a reasoning ask.
 LONG_PROMPT_CHARS = 1200
 LONG_PROMPT_MIN_QUESTIONS = 2
-#: Share of non-ASCII characters above which the brevity rule is not trusted: a short
-#: prompt in a language whose markers this module does not carry is not "fast", it is
-#: simply unclassified and belongs to the LLM.
-NON_ASCII_RATIO = 0.1
+#: Share of characters outside the covered scripts (ASCII/Latin and Cyrillic) above
+#: which the brevity rule is not trusted: a short prompt in a language whose markers
+#: this module does not carry is not "fast", it is simply unclassified and belongs to
+#: the LLM. A stray em dash or emoji stays under the bar.
+UNCOVERED_SCRIPT_RATIO = 0.1
 #: Two or more of these in one prompt read as source code rather than prose.
 CODE_KEYWORD_CLUSTER = 2
 #: Letters of Russian inflection a reasoning marker may grow ("сравни" -> "сравните").
@@ -104,11 +112,17 @@ REASONING_MARKERS = (
     "root cause",
     "explain how",
     "pros and cons",
-    "better",
-    "worse",
     "which of",
     "versus",
     " vs ",
+)
+
+#: Markers that *suggest* a comparison but read just as naturally in a trivial ask
+#: ("can you make this sentence better?", "what should we have for dinner?"). They are
+#: scored at :data:`REASONING_SOFT_CONFIDENCE`, i.e. they defer rather than decide.
+REASONING_MARKERS_SOFT = (
+    "better",
+    "worse",
     "faster",
     "scales",
     "should we",
@@ -171,6 +185,8 @@ _INDENT_RE = re.compile(r"^(?: {4}|\t)", re.MULTILINE)
 #: or a phone number as a maths problem.
 _MATH_RE = re.compile(r"\w\*\*[\w(]|\^\d")
 _CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
+#: Any Cyrillic character, for the covered-script test (not just the Russian letters).
+_CYRILLIC_CHAR_RE = re.compile(r"[Ѐ-ӿԀ-ԯ]")
 
 
 def _keyword_re(keyword: str) -> re.Pattern[str]:
@@ -203,6 +219,7 @@ def _marker_re(marker: str) -> re.Pattern[str]:
 
 _CODE_KEYWORD_RES = tuple(_keyword_re(k) for k in sorted(CODE_KEYWORDS))
 _REASONING_RES = tuple(_marker_re(m) for m in (*REASONING_MARKERS, *REASONING_MARKERS_RU))
+_REASONING_SOFT_RES = tuple(_marker_re(m) for m in REASONING_MARKERS_SOFT)
 
 
 def _is_path_char(ch: str) -> bool:
@@ -250,15 +267,26 @@ def _has_reasoning_marker(prompt: str) -> bool:
     return any(pattern.search(prompt) for pattern in _REASONING_RES)
 
 
+def _has_soft_reasoning_marker(prompt: str) -> bool:
+    return any(pattern.search(prompt) for pattern in _REASONING_SOFT_RES)
+
+
 def _has_math_signal(prompt: str) -> bool:
     return bool(_MATH_RE.search(prompt))
 
 
-def _mostly_ascii(prompt: str) -> bool:
+def _script_is_covered(prompt: str) -> bool:
+    """True when the prompt is written in a script whose markers this module carries.
+
+    Latin/ASCII and Cyrillic are covered, so a short Russian question is as much a
+    lookup as a short English one. A prompt in any other script (Chinese, Arabic,
+    Hebrew...) is not "fast" merely because our marker lists missed it: it defers.
+    A few stray characters (an em dash, an emoji) do not disqualify a prompt.
+    """
     if not prompt:
         return False
-    non_ascii = sum(1 for ch in prompt if ord(ch) > 127)
-    return non_ascii / len(prompt) <= NON_ASCII_RATIO
+    uncovered = sum(1 for ch in prompt if ord(ch) > 127 and not _CYRILLIC_CHAR_RE.match(ch))
+    return uncovered / len(prompt) <= UNCOVERED_SCRIPT_RATIO
 
 
 def classify_local(prompt: str) -> tuple[str, float]:
@@ -278,8 +306,11 @@ def classify_local(prompt: str) -> tuple[str, float]:
         return "reasoning", REASONING_MARKER_CONFIDENCE
     if len(prompt) > LONG_PROMPT_CHARS and prompt.count("?") >= LONG_PROMPT_MIN_QUESTIONS:
         return "reasoning", REASONING_LONG_CONFIDENCE
+    if _has_soft_reasoning_marker(prompt):
+        # Checked before the brevity rule: a soft marker must defer, not become "fast".
+        return "reasoning", REASONING_SOFT_CONFIDENCE
     stripped = prompt.strip()
-    if len(prompt) < FAST_MAX_CHARS and stripped and _mostly_ascii(prompt):
+    if len(prompt) < FAST_MAX_CHARS and stripped and _script_is_covered(prompt):
         if "?" in stripped or len(stripped.split()) <= FAST_MAX_WORDS:
             return "fast", FAST_CONFIDENCE
     return "general", UNSURE_CONFIDENCE
