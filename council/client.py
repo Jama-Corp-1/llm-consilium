@@ -16,6 +16,11 @@ Resolver = Callable[[str, str | None, str | None], str]
 
 _BACKOFF_DELAYS = (0.5, 1.0)
 _MAX_RETRY_AFTER = 30.0
+# Pool-wide completion ceiling for a call that does not resolve its own budget.
+# max_tokens is a CEILING and the free tiers charge only tokens actually generated, so
+# unused headroom is free -- while 2048 demonstrably truncated cloudflare-nemotron-120b
+# mid-answer. Per-member budgets are resolved in council.orchestrator.
+DEFAULT_MAX_TOKENS = 4096
 
 # LiteLLM wraps provider failures as "<Provider>Exception - ..."; a proxy-level
 # rejection (e.g. bad master key) carries no such marker. Case-sensitive on purpose:
@@ -79,7 +84,8 @@ async def complete(
     alias: str,
     prompt: str,
     *,
-    max_tokens: int = 2048,
+    reasoning_effort: str | None = None,
+    max_tokens: int | None = None,
     timeout: float = 120.0,
     transport: httpx.AsyncBaseTransport | None = None,
     recorder: Callable[[str, int], None] | None = None,
@@ -87,11 +93,15 @@ async def complete(
     resolve: Resolver | None = None,
 ) -> CallResult:
     headers = {"Authorization": f"Bearer {api_key}"}
-    payload = {
+    payload: dict[str, Any] = {
         "model": alias,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
+        "max_tokens": max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS,
     }
+    # Sent only when asked for: a member that does not accept the parameter answers
+    # HTTP 400 litellm.UnsupportedParamsError, which costs that member its vote.
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
     attempt = 0
     while True:
         try:
@@ -186,16 +196,20 @@ def make_caller(
     *,
     recorder: Callable[[str, int], None] | None = None,
     max_retries: int = 2,
-    max_tokens: int = 2048,
+    reasoning_effort: str | None = None,
+    max_tokens: int | None = None,
     timeout: float = 120.0,
     resolve: Resolver | None = None,
 ) -> DetailedCaller:
+    # The bound keywords are defaults: functools.partial lets a per-call
+    # reasoning_effort / max_tokens override them.
     return functools.partial(
         complete,
         base_url,
         api_key,
         recorder=recorder,
         max_retries=max_retries,
+        reasoning_effort=reasoning_effort,
         max_tokens=max_tokens,
         timeout=timeout,
         resolve=resolve,

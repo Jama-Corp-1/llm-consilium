@@ -145,6 +145,9 @@ async def _judge(
                 caller(
                     judge_alias,
                     _JUDGE_PROMPT.format(n=len(ok), prompt=prompt, candidates=candidates),
+                    # The chair weighs the candidates and rewrites a standalone answer:
+                    # reasoning work, so it asks for the higher effort where available.
+                    reasoning=True,
                 ),
                 timeout,
             )

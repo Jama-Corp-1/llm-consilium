@@ -13,7 +13,7 @@ def _answers(*pairs):
     return [MemberAnswer(a, ok=ok, answer=ans, detail="ok" if ok else "x") for a, ok, ans in pairs]
 
 
-async def _judge(alias, prompt):
+async def _judge(alias, prompt, **_params):
     return "Merged best answer.\nDISAGREEMENTS: candidate differed on scope.\nCONFIDENCE: high"
 
 
@@ -55,7 +55,7 @@ def test_judge_parses_answer_disagreements_and_confidence():
 def test_judge_prompt_uses_code_names_not_aliases_or_indices():
     captured = {}
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         captured["prompt"] = prompt
         return "Merged.\nDISAGREEMENTS: none\nCONFIDENCE: medium"
 
@@ -77,7 +77,7 @@ def test_judge_without_markers_yields_empty_disagreements_and_confidence():
         ("m2", True, "Another multi sentence answer with different emphasis entirely."),
     )
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         return "Just a merged answer with several words here."
 
     r = _run(ans, caller)
@@ -91,7 +91,7 @@ def test_judge_falls_back_to_next_judge():
         ("m2", True, "Another multi sentence answer with different emphasis entirely."),
     )
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         if alias == "chair":
             raise MemberCallError("chair", "429 rate-limited")
         return "Backup merge.\nDISAGREEMENTS: none\nCONFIDENCE: low"
@@ -107,7 +107,7 @@ def test_best_single_when_all_judges_fail():
         ("m2", True, "A much longer and more substantive candidate answer here indeed."),
     )
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         raise MemberCallError(alias, "429 rate-limited")
 
     r = _run(ans, caller, judges=("chair", "backup"))
@@ -135,7 +135,7 @@ def test_peer_rank_picks_mean_ordinal_winner():
     # With rng=Random(0), 3 answers get code-names Aardvark/Basilisk/Cheetah in some order.
     # Each ranker returns a fixed ranking; controller-independent because we assert on the
     # winning TEXT, resolved through the code-name mapping.
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         # every ranker ranks the SAME code-name order (best->worst) as printed in `prompt`;
         # pick the first code-name that appears in the block as the unanimous winner
         import re as _re
@@ -161,7 +161,7 @@ def test_peer_rank_excludes_self_vote():
     _, mapping = anonymize_pairs([(a.alias, a.answer) for a in ans], rng=random.Random(0))
     cn = {owner: c for c, owner in mapping}
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         # m1 and m2 both rank m1 first; m3 and m4 both rank m2 first.
         # Counting self-votes, m1 and m2 tie (2 first-place each). Excluding m1's and m2's
         # self-votes, m2 wins outright (m3 & m4 back it, m1 does not) — so only correct
@@ -181,7 +181,7 @@ def test_peer_rank_falls_back_to_judge_when_too_few_rankers():
     ans = _members(("m1", "A long detailed answer about the tradeoffs here."),
                    ("m2", "Another long detailed answer with different emphasis."))
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         if "RANKING" in prompt or "Rank them" in prompt:  # ranker prompt -> unparseable
             return "I cannot rank these."
         return "Judged merge.\nDISAGREEMENTS: none\nCONFIDENCE: medium"
@@ -194,7 +194,7 @@ def test_peer_rank_falls_back_to_judge_when_too_few_rankers():
 def test_mode_forces_path_and_unknown_raises():
     ans = _members(("m1", "yes"), ("m2", "yes"), ("m3", "no"))
     # closed-form, but mode='judge' forces the judge path
-    async def judge(alias, prompt):
+    async def judge(alias, prompt, **_params):
         return "Merged.\nDISAGREEMENTS: none\nCONFIDENCE: low"
     rj = asyncio.run(aggregate.aggregate(
         "q", ans, caller=judge, judge_aliases=["chair"], rng=random.Random(0), mode="judge"))
@@ -272,7 +272,7 @@ def test_debate_assigns_round_robin_stances():
     ans = _members(("m1", "alpha one"), ("m2", "bravo two"), ("m3", "charlie three"))
     stances = []
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         if "debating" in prompt:
             for s in ("for", "against", "neutral"):
                 if f"stance: {s}" in prompt:
@@ -289,7 +289,7 @@ def test_debate_converges_early_and_stops():
     ans = _members(("m1", "initial one"), ("m2", "initial two"), ("m3", "initial three"))
     calls = {"challenge": 0}
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         if "debating" in prompt:
             calls["challenge"] += 1
             return "Critique.\nREVISED: consensus answer shared by all members here now"
@@ -306,7 +306,7 @@ def test_debate_runs_full_rounds_when_divergent():
     ans = _members(("m1", "alpha"), ("m2", "bravo"), ("m3", "charlie"))
     calls = {"challenge": 0}
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         if "debating" in prompt:
             calls["challenge"] += 1
             return f"REVISED: wordone{calls['challenge']} wordtwo{calls['challenge']}"
@@ -322,7 +322,7 @@ def test_debate_runs_full_rounds_when_divergent():
 def test_debate_single_member_falls_back_to_judge():
     ans = _members(("m1", "only answer here that is reasonably long indeed"))
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         return "Judged.\nDISAGREEMENTS: none\nCONFIDENCE: high"
 
     r = asyncio.run(aggregate.aggregate(
@@ -335,7 +335,7 @@ def test_debate_failed_challenger_keeps_prior_answer():
                    ("m3", "priorcharlie keeps"))
     captured = {}
 
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         if "debating" in prompt:
             if alias == "m1":
                 raise MemberCallError("m1", "boom")
@@ -387,7 +387,7 @@ def test_peer_rank_timeout_cancels_slow_ranker():
     import asyncio as _asyncio
     finished = []
 
-    async def slow(alias, prompt):
+    async def slow(alias, prompt, **_params):
         if "RANKING:" in prompt:
             await _asyncio.sleep(0.15)
             finished.append(alias)  # only reached if the call was NOT cancelled
@@ -405,7 +405,7 @@ def test_peer_rank_timeout_cancels_slow_ranker():
 
 
 def test_judge_timeout_falls_through_to_next_judge():
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         if alias == "slow-chair":
             await asyncio.sleep(1.0)
         return "Fast synthesis.\nDISAGREEMENTS: none\nCONFIDENCE: high"
@@ -424,7 +424,7 @@ def test_judge_timeout_falls_through_to_next_judge():
 
 
 def test_judge_proxy_error_propagates():
-    async def caller(alias, prompt):
+    async def caller(alias, prompt, **_params):
         raise ProxyError("proxy rejected the request: HTTP 401")
 
     ans = _answers(("m1", True, "a long free-form answer"), ("m2", True, "another long answer"))

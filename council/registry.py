@@ -81,6 +81,22 @@ def _scores(info: dict[str, Any]) -> dict[str, int]:
     return {str(c): strength for c in caps}
 
 
+def _accepts_reasoning_effort(alias: str, info: dict[str, Any]) -> bool:
+    """Read ``model_info.reasoning_effort``, which is a yes/no *capability* flag.
+
+    The wire protocol takes a string in that field ("low"/"medium"/"high"), so a config
+    that pastes the wire value here is a plausible typo -- and ``bool("medium")`` would
+    silently mean "yes". Reject anything but a boolean instead.
+    """
+    value = info.get("reasoning_effort", False)
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"member {alias}: model_info.reasoning_effort must be true or false "
+            f"(it is a capability flag, not the effort to send), got {value!r}"
+        )
+    return value
+
+
 def load_members(
     config_path: str | Path, *, available_keys: set[str] | None = None
 ) -> list[Member]:
@@ -98,6 +114,7 @@ def load_members(
         family = info.get("provider_family") or vendor
         api_base = params.get("api_base")
         timeout = info.get("timeout")
+        max_tokens = info.get("max_tokens")
         members.append(
             Member(
                 alias=entry["model_name"],
@@ -113,6 +130,8 @@ def load_members(
                 api_base_ref=str(api_base) if api_base is not None else None,
                 required_env=frozenset(_required_env(params)),
                 timeout=float(timeout) if timeout is not None else None,
+                accepts_reasoning_effort=_accepts_reasoning_effort(entry["model_name"], info),
+                max_tokens=int(max_tokens) if max_tokens is not None else None,
             )
         )
     return members

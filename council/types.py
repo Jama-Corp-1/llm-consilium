@@ -1,12 +1,59 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
 from dataclasses import dataclass
+from typing import Protocol
 
-# (alias, prompt) -> answer text
-AsyncCaller = Callable[[str, str], Awaitable[str]]
-# (alias, prompt) -> CallResult (content + which alias actually served it)
-DetailedCaller = Callable[[str, str], Awaitable["CallResult"]]
+
+class AsyncCaller(Protocol):
+    """(alias, prompt) -> answer text, as the *task-aware* consumers see it.
+
+    ``router.classify`` and ``aggregate`` know what KIND of work a call is but not which
+    member will serve it, so they pass intent (``reasoning``) and leave the translation
+    into provider parameters to the orchestrator, which knows the member.
+    """
+
+    # Positional-only: every call site passes the pair positionally, so an
+    # implementation is free to name them (``_alias``, ``text``, ...).
+    def __call__(
+        self, alias: str, prompt: str, /, *, reasoning: bool = ...
+    ) -> Awaitable[str]: ...
+
+
+class DetailedCaller(Protocol):
+    """(alias, prompt) -> CallResult (content + which alias actually served it).
+
+    The provider parameters are already RESOLVED here: ``reasoning_effort`` is passed
+    only for a member whose config says it accepts the parameter, and ``max_tokens`` is
+    that member's budget. ``None`` means "leave it to the transport's default".
+    """
+
+    def __call__(
+        self,
+        alias: str,
+        prompt: str,
+        /,
+        *,
+        reasoning_effort: str | None = ...,
+        max_tokens: int | None = ...,
+    ) -> Awaitable[CallResult]: ...
+
+
+class PlainCaller(Protocol):
+    """A ``DetailedCaller`` that answers with bare text instead of a ``CallResult``.
+
+    Accepted for injection into the ``Orchestrator`` (it cannot report a proxy fallback).
+    """
+
+    def __call__(
+        self,
+        alias: str,
+        prompt: str,
+        /,
+        *,
+        reasoning_effort: str | None = ...,
+        max_tokens: int | None = ...,
+    ) -> Awaitable[str]: ...
 
 
 @dataclass(frozen=True)
@@ -24,6 +71,11 @@ class Member:
     api_base_ref: str | None = None  # e.g. "os.environ/CLOUDFLARE_API_BASE"
     required_env: frozenset[str] = frozenset()
     timeout: float | None = None  # model_info.timeout (seconds)
+    # model_info.reasoning_effort: the member ACCEPTS an explicit reasoning effort.
+    # Verified per member, never inferred: the same weights are accepted on Groq and
+    # rejected (HTTP 400 UnsupportedParamsError) behind Cloudflare's OpenAI shim.
+    accepts_reasoning_effort: bool = False
+    max_tokens: int | None = None  # model_info.max_tokens: per-member completion budget
 
     @property
     def capabilities(self) -> tuple[str, ...]:

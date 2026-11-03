@@ -1,10 +1,12 @@
 import asyncio
 import functools
+import json
 
 import httpx
 import pytest
 
 from council import client
+from council.client import classify_error
 from council.errors import MemberCallError, ProxyError
 from council.types import CallResult
 
@@ -371,3 +373,80 @@ def test_resolver_exception_falls_back_to_requested_alias():
         )
     )
     assert out == CallResult("ok", "council/a", 0)
+
+
+def _capture(status=200, body=None):
+    """Mock transport that records the request body of the last call."""
+    seen: dict = {}
+
+    def handler(request):
+        seen.clear()
+        seen.update(json.loads(request.content))
+        if isinstance(body, str):
+            return httpx.Response(status, text=body)
+        return httpx.Response(status, json=body if body is not None else _ok_body())
+
+    return httpx.MockTransport(handler), seen
+
+
+def test_complete_sends_reasoning_effort_only_when_given():
+    transport, seen = _capture()
+    asyncio.run(client.complete("http://x/v1", "k", "council/a", "hi", transport=transport))
+    assert "reasoning_effort" not in seen  # a member that rejects it must never see it
+    asyncio.run(
+        client.complete(
+            "http://x/v1", "k", "council/a", "hi", transport=transport, reasoning_effort="medium"
+        )
+    )
+    assert seen["reasoning_effort"] == "medium"
+
+
+def test_complete_honours_a_per_call_max_tokens():
+    transport, seen = _capture()
+    asyncio.run(client.complete("http://x/v1", "k", "council/a", "hi", transport=transport))
+    assert seen["max_tokens"] == client.DEFAULT_MAX_TOKENS == 4096
+    asyncio.run(
+        client.complete(
+            "http://x/v1", "k", "council/a", "hi", transport=transport, max_tokens=8192
+        )
+    )
+    assert seen["max_tokens"] == 8192
+    # make_caller binds a DEFAULT; a per-call budget still wins over it.
+    caller = functools.partial(
+        client.complete, "http://x/v1", "k", transport=transport, max_tokens=2048
+    )
+    asyncio.run(caller("council/a", "hi"))
+    assert seen["max_tokens"] == 2048
+    asyncio.run(caller("council/a", "hi", max_tokens=8192))
+    assert seen["max_tokens"] == 8192
+
+
+def test_make_caller_binds_the_new_parameters():
+    caller = client.make_caller("http://x/v1", "k", reasoning_effort="low", max_tokens=4096)
+    assert caller.keywords["reasoning_effort"] == "low"
+    assert caller.keywords["max_tokens"] == 4096
+
+
+UNSUPPORTED_PARAM_BODY = (
+    '{"error":{"message":"litellm.UnsupportedParamsError: openai does not support parameters: '
+    "['reasoning_effort'], for model=@cf/openai/gpt-oss-120b. To drop these, set "
+    '`litellm.drop_params=True`"}}'
+)
+
+
+def test_unsupported_parameter_400_stays_a_member_failure():
+    """A provider rejecting a parameter is that MEMBER's problem, not the proxy's."""
+    transport, _seen = _capture(400, UNSUPPORTED_PARAM_BODY)
+    with pytest.raises(MemberCallError) as ei:
+        asyncio.run(
+            client.complete(
+                "http://x/v1", "k", "council/a", "hi", transport=transport,
+                reasoning_effort="medium", max_retries=0,
+            )
+        )
+    assert ei.value.detail == "HTTP 400"
+    # Not permanent: the body carries no LiteLLM "<Provider>Exception" marker, so per the
+    # classify_error contract the member keeps its health -- the model is alive, only this
+    # call's parameters were wrong. The council degrades by dropping the voter.
+    assert ei.value.permanent is False
+    assert classify_error(400, UNSUPPORTED_PARAM_BODY) is not None  # never a ProxyError

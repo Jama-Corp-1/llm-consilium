@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from council import aggregate as agg
-from council import client, compose, fanout, privacy, registry, router, usage
+from council import budget, client, compose, fanout, heuristics, privacy, registry, router, usage
 from council import health as health_module
 from council import runlog as runlog_module
 from council.errors import AllMembersFailed, MemberCallError, NoEligibleMember, PrivacyRefusal
@@ -18,6 +18,7 @@ from council.types import (
     DetailedCaller,
     Member,
     MemberAnswer,
+    PlainCaller,
 )
 
 DEFAULT_BASE_URL = "http://127.0.0.1:4000/v1"
@@ -31,13 +32,18 @@ DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parents[1] / "proxy" / "confi
 CLASSIFIER_ALIAS: str | None = None
 CHAIR_ALIAS: str | None = None
 ALL_DOWN_NOTE = "all members marked down; retrying"
+# Budget / effort policy lives in council.budget so that every path to a member --
+# ask, the classifier, the chair and the council fan-out -- resolves it identically.
+DEFAULT_MAX_TOKENS = budget.DEFAULT_MAX_TOKENS
+REASONING_MAX_TOKENS = budget.REASONING_MAX_TOKENS
+_resolve_call_params = budget.resolve_call_params
 
 
 class Orchestrator:
     def __init__(
         self,
         members: list[Member],
-        caller: AsyncCaller | DetailedCaller,
+        caller: PlainCaller | DetailedCaller,
         *,
         classifier_alias: str | None = CLASSIFIER_ALIAS,
         chair_alias: str | None = CHAIR_ALIAS,
@@ -45,9 +51,10 @@ class Orchestrator:
         runlog: runlog_module.RunLog | None = None,
         call_timeout: float = 30.0,
         health: health_module.HealthStore | None = None,
+        local_classify: bool = True,
     ) -> None:
         self._members = members
-        self._caller = caller  # as given: plain-text (AsyncCaller) or DetailedCaller
+        self._caller = caller  # as given: plain-text (PlainCaller) or DetailedCaller
         self._detailed: DetailedCaller = self._call_detailed
         self._plain: AsyncCaller = self._call_plain  # aggregate consumes plain text
         self._health = health
@@ -56,6 +63,7 @@ class Orchestrator:
         self._store = store
         self._runlog = runlog
         self._call_timeout = call_timeout
+        self._local_classify = local_classify
 
     def _by_alias(self, alias: str) -> Member | None:
         return next((m for m in self._members if m.alias == alias), None)
@@ -81,14 +89,36 @@ class Orchestrator:
 
     # -- caller adaptation ----------------------------------------------
 
-    async def _call_detailed(self, alias: str, prompt: str) -> CallResult:
-        res = await self._caller(alias, prompt)
+    async def _call_detailed(
+        self,
+        alias: str,
+        prompt: str,
+        *,
+        reasoning_effort: str | None = None,
+        max_tokens: int | None = None,
+    ) -> CallResult:
+        res = await self._caller(
+            alias, prompt, reasoning_effort=reasoning_effort, max_tokens=max_tokens
+        )
         if isinstance(res, str):  # plain-text caller: it can only report the requested alias
             return CallResult(res, alias)
         return res
 
-    async def _call_plain(self, alias: str, prompt: str) -> str:
-        return (await self._detailed(alias, prompt)).content
+    async def _call_plain(self, alias: str, prompt: str, *, reasoning: bool = False) -> str:
+        """Plain-text call for the task-aware consumers (router, aggregate).
+
+        They pass intent; the member behind ``alias`` decides the actual parameters. An
+        alias that is not a council member (a test double, a pinned chair that was
+        dropped) falls back to the transport's own defaults.
+        """
+        member = self._by_alias(alias)
+        effort, max_tokens = (
+            _resolve_call_params(member, reasoning=reasoning)
+            if member is not None
+            else (None, None)
+        )
+        res = await self._detailed(alias, prompt, reasoning_effort=effort, max_tokens=max_tokens)
+        return res.content
 
     # -- health / timeouts ----------------------------------------------
 
@@ -133,15 +163,25 @@ class Orchestrator:
         if served in self._health.down_aliases():
             self._health.mark_up(served)
 
-    async def _call_member(self, member: Member, prompt: str) -> CallResult:
+    async def _call_member(
+        self, member: Member, prompt: str, *, reasoning: bool = False
+    ) -> CallResult:
         """One ``ask`` call under the member's own timeout, with health bookkeeping.
+
+        ``reasoning`` states the INTENT of the call (is this reasoning work?); the
+        effort and budget actually sent are resolved per member.
 
         A timeout surfaces as a transient ``MemberCallError("timeout")``; ``ProxyError``
         propagates untouched (no health change).
         """
+        # Not named "budget": that would shadow the imported council.budget module.
+        effort, max_tokens = _resolve_call_params(member, reasoning=reasoning)
         try:
             res = await asyncio.wait_for(
-                self._detailed(member.alias, prompt), self._timeout_for(member)
+                self._detailed(
+                    member.alias, prompt, reasoning_effort=effort, max_tokens=max_tokens
+                ),
+                self._timeout_for(member),
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
             raise MemberCallError(member.alias, "timeout") from exc
@@ -174,25 +214,36 @@ class Orchestrator:
 
     async def _classify(
         self, prompt: str, allowed: list[Member], pool: list[Member]
-    ) -> tuple[str, str | None]:
-        """Classify via the strongest healthy "fast" member -> (capability, note).
+    ) -> tuple[str, str | None, bool]:
+        """Classify a prompt -> (capability, note, decided_locally).
 
-        The classifier is picked from the health-filtered ``pool`` (``allowed`` only if the
-        pool is empty), runs under its own timeout with health bookkeeping, and a member
-        failure degrades to "general" instead of failing the call. ProxyError propagates.
+        The local heuristic goes first (unless ``local_classify=False``): it makes no
+        network and no member call, so it can neither touch the health store nor widen
+        the privacy gate, and a confident verdict saves a whole round-trip.
+
+        When the heuristic is unsure, the LLM classifier runs as before: the strongest
+        healthy "fast" member of the health-filtered ``pool`` (``allowed`` only if the
+        pool is empty), under its own timeout with health bookkeeping; a member failure
+        degrades to "general" instead of failing the call. ProxyError propagates.
         """
+        if self._local_classify:
+            capability, confidence = heuristics.classify_local(prompt)
+            if confidence >= heuristics.CONFIDENCE_THRESHOLD:
+                return capability, None, True
         alias = self._classifier_for(pool or allowed)
         member = self._by_alias(alias)
         if member is None:  # pragma: no cover - _classifier_for only returns known members
             raise NoEligibleMember(f"classifier {alias} is not a council member")
 
-        async def call(_alias: str, text: str) -> str:
-            return (await self._call_member(member, text)).content
+        async def call(_alias: str, text: str, *, reasoning: bool = False) -> str:
+            # Classification is a one-word labelling job, never reasoning work: it runs
+            # at the lowest effort whatever the prompt it is classifying.
+            return (await self._call_member(member, text, reasoning=False)).content
 
         try:
-            return await router.classify(prompt, caller=call, classifier_alias=alias), None
+            return await router.classify(prompt, caller=call, classifier_alias=alias), None, False
         except MemberCallError as exc:
-            return "general", f"classifier failed ({exc.detail}); defaulting to general"
+            return "general", f"classifier failed ({exc.detail}); defaulting to general", False
 
     async def ask(
         self, prompt: str, *, model: str | None = None, capability: str | None = None,
@@ -214,19 +265,21 @@ class Orchestrator:
         pool, pool_note = self._pool(allowed)
         auto = capability is None
         classify_note: str | None = None
+        local = False
         if capability is None:
-            capability, classify_note = await self._classify(prompt, allowed, pool)
+            capability, classify_note, local = await self._classify(prompt, allowed, pool)
             if classify_note:
                 pool, pool_note = self._pool(allowed)  # the classifier may just have gone down
         errors: list[str] = []
         for member in router.rank(pool, capability):
             try:
-                res = await self._call_member(member, prompt)
+                res = await self._call_member(member, prompt, reasoning=capability == "reasoning")
             except MemberCallError as exc:
                 errors.append(f"{member.alias}[{exc.detail}]")
                 continue
             trail = " -> ".join([*errors, member.alias])
-            note = f"{'auto-routed' if auto else 'routed'}: {capability} -> {trail}"
+            how = ("auto-routed (local)" if local else "auto-routed") if auto else "routed"
+            note = f"{how}: {capability} -> {trail}"
             for extra in (classify_note, pool_note):
                 if extra:
                     note += f"; {extra}"
@@ -283,6 +336,8 @@ class Orchestrator:
         )
         answers = await fanout.fan_out(
             prompt, chosen, self._detailed, timeout=self._call_timeout,
+            # A voter answers the question; the chair does the reasoning over the answers.
+            reasoning=False,
             **({"on_member": on_member} if on_progress is not None else {}),
         )
         for answer in answers:
@@ -332,7 +387,9 @@ class Orchestrator:
         self, prompt: str, allowed: list[Member], pool: list[Member],
         size: int | None, notes: list[str],
     ) -> list[Member]:
-        capability, classify_note = await self._classify(prompt, allowed, pool)
+        # council()'s notes do not distinguish the two classify paths (no "auto-routed"
+        # prefix there), so the local flag is irrelevant to its note assembly.
+        capability, classify_note, _local = await self._classify(prompt, allowed, pool)
         if classify_note:
             notes.append(classify_note)
             pool, pool_note = self._pool(allowed)  # the classifier may just have gone down
@@ -363,13 +420,18 @@ class Orchestrator:
 
 
 def build(
-    config_path: str | Path = DEFAULT_CONFIG_PATH, *, base_url: str = DEFAULT_BASE_URL, api_key: str
+    config_path: str | Path = DEFAULT_CONFIG_PATH, *, base_url: str = DEFAULT_BASE_URL,
+    api_key: str, local_classify: bool = True,
 ) -> Orchestrator:
     members = registry.load_members(config_path, available_keys=registry.available_env_keys())
     store = usage.UsageStore()
     resolve = functools.partial(registry.served_alias, members, env=registry.env_values())
+    # No max_tokens bind: every path resolves the budget per member and forwards it
+    # explicitly (the fan-out included, since it asks voters for "low" effort), and an
+    # explicit keyword beats a partial-bound one -- so a bind here would be inert. A
+    # member that pins no budget lands on client.DEFAULT_MAX_TOKENS.
     caller = client.make_caller(base_url, api_key, recorder=store.record, resolve=resolve)
     return Orchestrator(
         members, caller, store=store, runlog=runlog_module.RunLog(),
-        health=health_module.HealthStore(),
+        health=health_module.HealthStore(), local_classify=local_classify,
     )

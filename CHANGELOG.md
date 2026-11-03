@@ -7,8 +7,43 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **Members no longer return empty answers on hard prompts.** The flat 2048-token output budget
+  was smaller than some members need for one answer: probed live, `groq-gpt-oss-20b` returned
+  *nothing* (`finish_reason=length`, 2048 completion tokens, zero content) and
+  `groq-gpt-oss-120b` was truncated mid-answer. The budget is now 4096 pool-wide and 8192 for
+  members that accept a reasoning effort. `max_tokens` is a ceiling and free tiers charge tokens
+  actually generated, so unused headroom costs nothing.
+- Council voters are asked for an explicit `low` reasoning effort instead of inheriting the
+  provider default, which was the cause of the truncation above on the fan-out path.
+- `cloudflare-qwen3.8-27b` no longer advertises `reasoning`: it returns an empty answer on a hard
+  prompt at 4096 tokens, cannot be given an effort level (Cloudflare's OpenAI shim rejects the
+  parameter), and did not return at all within 300 s at 16384. It keeps `code` and `general`.
+- A non-boolean `model_info.reasoning_effort` (e.g. the plausible typo `"medium"`) is now a
+  `ValueError` naming the member, instead of silently coercing to `true`.
 - Pin `mcp>=1.0,<2`: the 2.x SDK renamed `FastMCP` to `MCPServer`, which broke CI installs from an
   unconstrained `mcp>=1.0`; the 2.x migration is a deliberate follow-up, not a pip-drift side effect.
+
+### Added
+- **Local prompt classifier** (`council/heuristics.py`): `ask` without an explicit `capability` no
+  longer always spends an LLM round-trip deciding what kind of task it is. A pure, dependency-free
+  heuristic classifies the prompt and reports a confidence; at or above 0.7 it decides, below it
+  the existing LLM classifier runs exactly as before. Measured on the live proxy, short lookups
+  went from ~0.85 s to ~0.25-0.45 s end to end, and each saves one free-tier request. The note
+  field distinguishes the paths: `auto-routed (local): …` versus `auto-routed: …`.
+  Signals, in precedence order: code (fenced block, diff header, traceback, source path, or a
+  keyword cluster backed by code punctuation), reasoning (explicit markers in English *and
+  Russian*, or a maths operator between operands), brevity (short, unmarked questions in a
+  covered script), then `general` below the threshold so an unrecognised prompt defers rather
+  than being guessed at. Soft markers (`better`, `faster`, `should we`, …) deliberately report a
+  sub-threshold confidence: they hand the decision to the LLM classifier instead of making it.
+- **Per-member reasoning effort and token budget**, both from `proxy/config.yaml` as the single
+  source of truth: `model_info.reasoning_effort: true` marks a member that accepts the parameter,
+  and `model_info.max_tokens` overrides the computed budget for one member. Effort is `low` by
+  default and `medium` for reasoning-capability routes and the aggregation chair; `high` is never
+  sent (see the probe table in the design doc: it returns an empty answer below an 8192 budget and
+  trips Groq's per-minute token limit at 16384).
+- `council/budget.py`: one place that resolves `(reasoning_effort, max_tokens)` for a member, used
+  by every call path, with the pool-wide budget as a single constant rather than two that can drift.
 
 ### Added
 - **Health store** (`~/.config/consilium/health.json`): permanent provider errors (401/402/403/404,

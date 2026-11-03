@@ -13,7 +13,10 @@ driver** — you (Claude) remain the primary reasoner.
 - `ask(prompt, model?, capability?, sensitivity?)` — one best-fit model. Default
   auto-routes (classifies the task). Use for a quick routed second opinion, a cheap
   bulk step, or a strength-specific call (pass `capability` = reasoning|code|fast|general,
-  or `model` for a specific member).
+  or `model` for a specific member). Auto-routing classifies **locally** when it can, so a
+  clear prompt costs one call, not two; an ambiguous one still pays an LLM classifier
+  round-trip. Passing `capability` skips classification entirely — do that when you already
+  know the kind of task, and the call is as fast as it gets.
 - `council(prompt, sensitivity?, members?, size?)` — fan out to a diverse, auto-composed
   set of models and aggregate. `members` pins an exact roster (list of aliases); `size`
   overrides the adaptive 3-5 council size. Tier-B members are dropped on `sensitive`
@@ -29,6 +32,8 @@ driver** — you (Claude) remain the primary reasoner.
   is the last probe time — down members are skipped automatically.
 - A council `per_member` entry's `served_by` is the alias that actually served when it
   differs from `alias`; normally null.
+- A `note` reading `auto-routed (local): …` means the prompt was classified without an LLM
+  call; plain `auto-routed: …` means the classifier ran.
 - **Privacy:** always set `sensitivity`. Default `sensitive` (Tier-A only). Use
   `public` only for generic/published questions. **Never** send secrets/.env/credentials
   to any free tier — the gate refuses obvious secrets, but strip them yourself first.
